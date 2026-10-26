@@ -1,0 +1,71 @@
+{
+  "meta": {
+    "as_of": "2026-09-30",
+    "currency": "CNY"
+  },
+  "cap_table": [
+    { "holder": "创始人 A(CEO)", "type": "founder", "pct": 27.5, "voting_pct": 27.5, "board_seats": 2, "note": "含持股平台 GP 表决权" },
+    { "holder": "联合创始人 B(CTO)", "type": "founder", "pct": 13.0, "voting_pct": 13.0, "board_seats": 1 },
+    { "holder": "教授 C(首席科学家)", "type": "professor", "pct": 8.0, "voting_pct": 0, "board_seats": 0, "note": "表决权已书面委托创始人 A, 协议有效期至 2029-12" },
+    { "holder": "某大学资产经营有限公司", "type": "corp", "pct": 5.0, "voting_pct": 5.0, "board_seats": 0, "note": "职务发明作价入股取得" },
+    { "holder": "员工持股平台(有限合伙)", "type": "staff_platform", "pct": 10.5, "voting_pct": 10.5, "board_seats": 0, "note": "创始人 A 任执行事务合伙人" },
+    { "holder": "名义持有人 D", "type": "nominee", "pct": 2.0, "voting_pct": 2.0, "board_seats": 0, "note": "代创始人 A 持有, 无书面协议" },
+    { "holder": "天使基金 E", "type": "fund", "pct": 9.0, "voting_pct": 9.0, "board_seats": 1 },
+    { "holder": "A 轮基金 F", "type": "fund", "pct": 15.0, "voting_pct": 15.0, "board_seats": 1 },
+    { "holder": "B 轮产业方 G", "type": "corp", "pct": 6.0, "voting_pct": 6.0, "board_seats": 0 },
+    { "holder": "期权池(预留未授予)", "type": "esop_pool", "pct": 4.0, "voting_pct": 0, "board_seats": 0 }
+  ],
+  "concert": [
+    ["创始人 A(CEO)", "教授 C(首席科学家)"]
+  ],
+  "university": {
+    "involved": true,
+    "institution": "某大学",
+    "ip_form": "capitalized",
+    "equity_held_by_school": 5.0,
+    "professor_role": "department_head",
+    "part_time_approved": false,
+    "license_written": true,
+    "nodes": [
+      { "id": "N1", "status": "done", "note": "发明人 4 人, 其中 2 人已离职并签署权属确认" },
+      { "id": "N2", "status": "done", "note": "2021 年第 9 次校务会审议通过并公示 15 日" },
+      { "id": "N3", "status": "missing", "note": "仅有校方与团队协商作价, 无第三方评估报告" },
+      { "id": "N4", "status": "done", "note": "已完成工商变更登记" },
+      { "id": "N5", "status": "missing", "note": "收益分配比例与产业化考核条款尚未签署书面协议" }
+    ]
+  },
+  "nominal_holders": [
+    { "nominal": "名义持有人 D", "beneficial": "创始人 A(CEO)", "pct": 2.0, "reason": "早期为简化工商登记", "has_agreement": false }
+  ],
+  "platforms": [
+    { "name": "员工持股平台(有限合伙)", "gp": "创始人 A(CEO)", "gp_control": "founder", "exec_partner": "创始人 A(CEO)", "lp_count": 31 }
+  ],
+  "convertibles": [
+    { "type": "note", "principal": 30000000, "valuation_cap": 900000000, "discount": 0.8, "as_converted_pct": 3.4 },
+    { "type": "safe", "principal": 10000000, "valuation_cap": 1200000000, "discount": 0.85 }
+  ],
+  "esop": {
+    "total_pct": 14.5,
+    "granted_pct": 10.5,
+    "reserved_pct": 4.0
+  },
+  "terms": {
+    "liquidation_pref": "1x_np",
+    "anti_dilution": "broad_based",
+    "redemption_trigger": "ipo_deadline",
+    "redemption_amount": 380000000,
+    "personal_guarantee": true,
+    "board": { "founder": 3, "investor": 2, "independent": 1 },
+    "veto_matters": ["新增融资", "重大资产处置", "核心知识产权转让", "总经理任免"]
+  },
+  "financials": {
+    "cash": 210000000,
+    "undrawn_credit": 40000000
+  },
+  "scenarios": [
+    { "label": "基准", "dilution_pct": 0, "esop_topup_pct": 0 },
+    { "label": "下一轮稀释 12%", "dilution_pct": 12, "esop_topup_pct": 4 },
+    { "label": "下一轮稀释 22%", "dilution_pct": 22, "esop_topup_pct": 6 },
+    { "label": "两轮累计稀释 32%", "dilution_pct": 32, "esop_topup_pct": 8 }
+  ]
+}

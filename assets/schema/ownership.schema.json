@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/bci-investment-dd/assets/schema/ownership.schema.json",
+  "title": "bci-ownership 输入",
+  "description": "scripts/ownership.mjs 的输入契约。与通用股权穿透的差异见脚本顶部注释; 比例一律按「占现有总股本」的百分比填写, 完全稀释口径由脚本自行折算。",
+  "type": "object",
+  "required": ["meta"],
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["as_of"],
+      "additionalProperties": false,
+      "properties": {
+        "as_of": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "股权基准日, 须与章程/工商登记/期权台账的截止日一致" },
+        "currency": { "type": "string", "default": "CNY" }
+      }
+    },
+    "cap_table": {
+      "type": "array",
+      "description": "股东名册。pct 与 shares 二者取一; 同时给出时以 shares 为准并告警",
+      "items": {
+        "type": "object",
+        "required": ["holder", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "holder": { "type": "string" },
+          "type": {
+            "enum": ["founder", "professor", "staff", "staff_platform", "esop_pool", "fund", "corp", "nominee", "other"],
+            "description": "professor 指以个人身份持股的高校/院所人员; nominee 指名义持有人"
+          },
+          "pct": { "type": "number", "minimum": 0, "maximum": 100 },
+          "shares": { "type": "number", "minimum": 0, "description": "持股数; 与 pct 同时给出时以本字段为准" },
+          "voting_pct": { "type": "number", "minimum": 0, "maximum": 100, "description": "有效表决权比例。缺省等于 pct; AB 股或已生效的表决权委托在此填写" },
+          "board_seats": { "type": "integer", "minimum": 0 },
+          "note": { "type": "string", "description": "表决权委托、质押、冻结等安排的具体依据" }
+        }
+      }
+    },
+    "concert": {
+      "type": "array",
+      "description": "一致行动分组。组内成员表决权合并计入核心组, 但集团各成员的经济利益分别计算",
+      "items": { "type": "array", "minItems": 2, "items": { "type": "string" } }
+    },
+    "university": {
+      "type": "object",
+      "description": "高校/院所成果转化。involved=false 时第二节整节省略",
+      "additionalProperties": false,
+      "properties": {
+        "involved": { "type": "boolean", "default": false },
+        "institution": { "type": "string" },
+        "ip_form": { "enum": ["assignment", "license", "capitalized", "none"], "description": "转让 / 许可 / 作价入股 / 未安排" },
+        "equity_held_by_school": { "type": "number", "minimum": 0, "maximum": 100 },
+        "professor_role": { "enum": ["none", "pi", "department_head", "dean", "legal_rep"], "description": "涉及人员在校职务。院长/法定代表人身份会触发兼职审批与离职创业的合规要求" },
+        "part_time_approved": { "type": "boolean", "description": "是否已取得书面兼职或离岗创业审批" },
+        "license_written": { "type": "boolean" },
+        "nodes": {
+          "type": "array",
+          "description": "权属链五节点。缺一节点即视为权属未真正转移",
+          "items": {
+            "type": "object",
+            "required": ["id", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "enum": ["N1", "N2", "N3", "N4", "N5"], "description": "N1 职务发明认定与发明人清单 / N2 学校审批与公示 / N3 第三方评估作价 / N4 工商登记与股权交付 / N5 收益分配与产业化考核" },
+              "status": { "enum": ["done", "missing", "na"] },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "nominal_holders": {
+      "type": "array",
+      "description": "代持还原。无书面协议的直接列入待补文件清单",
+      "items": {
+        "type": "object",
+        "required": ["nominal", "beneficial", "pct"],
+        "additionalProperties": false,
+        "properties": {
+          "nominal": { "type": "string" },
+          "beneficial": { "type": "string" },
+          "pct": { "type": "number", "minimum": 0, "maximum": 100 },
+          "reason": { "type": "string" },
+          "has_agreement": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    "platforms": {
+      "type": "array",
+      "description": "持股平台。GP 控制是表决权杠杆的主要来源, 也是控制权可撤销性的主要风险点",
+      "items": {
+        "type": "object",
+        "required": ["name", "gp"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "gp": { "type": "string" },
+          "gp_control": { "enum": ["founder", "committee", "external"], "description": "GP 归属: 创始人 / 投委会 / 外部方" },
+          "exec_partner": { "type": "string" },
+          "lp_count": { "type": "integer", "minimum": 0, "description": "LP 人数。超过 50 人需核查是否触发私募或证券监管口径" }
+        }
+      }
+    },
+    "convertibles": {
+      "type": "array",
+      "description": "未转股的可转债 / SAFE。完全稀释口径必须含 as-converted",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "enum": ["note", "safe"] },
+          "principal": { "type": "number", "minimum": 0 },
+          "valuation_cap": { "type": "number", "minimum": 0 },
+          "discount": { "type": "number", "minimum": 0, "maximum": 1, "description": "折扣, 0.8 表示八折" },
+          "as_converted_pct": { "type": "number", "minimum": 0, "maximum": 100, "description": "按「完全稀释后总股本」的百分比填写。缺省时脚本按估值上限估算并标注" }
+        }
+      }
+    },
+    "esop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "granted_pct": { "type": "number", "minimum": 0, "maximum": 100, "description": "已授予部分, 已含在 cap_table 中, 不重复计入稀释" },
+        "reserved_pct": { "type": "number", "minimum": 0, "maximum": 100, "description": "预留未授予部分, 按「完全稀释后总股本」填写, 单独计一次稀释" }
+      }
+    },
+    "terms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "liquidation_pref": { "enum": ["1x_np", "1x", "2x", "other"], "description": "1x_np 表示 1 倍非参与型" },
+        "anti_dilution": { "type": "string", "description": "如 broad_based / narrow_based / full_ratchet" },
+        "redemption_trigger": { "enum": ["ipo_deadline", "material_breach", "performance", "none"] },
+        "redemption_amount": { "type": "number", "minimum": 0, "description": "触发后需支付的回购总额" },
+        "personal_guarantee": { "type": "boolean", "default": false, "description": "创始人是否承担个人连带责任" },
+        "board": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "founder": { "type": "integer", "minimum": 0 },
+            "investor": { "type": "integer", "minimum": 0 },
+            "independent": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "veto_matters": { "type": "array", "items": { "type": "string" }, "description": "投资方一票否决事项, 与所有权比例无关的控制力来源" }
+      }
+    },
+    "financials": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cash": { "type": "number", "minimum": 0 },
+        "undrawn_credit": { "type": "number", "minimum": 0 }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "description": "控制权摊薄情景。缺省用内置四档(基准 / 稀释 10% / 20% / 30%)",
+      "items": {
+        "type": "object",
+        "required": ["label", "dilution_pct"],
+        "additionalProperties": false,
+        "properties": {
+          "label": { "type": "string" },
+          "dilution_pct": { "type": "number", "minimum": 0, "maximum": 100, "description": "新增融资导致的稀释比例" },
+          "esop_topup_pct": { "type": "number", "minimum": 0, "maximum": 100, "description": "同轮期权池补足比例, 与融资稀释叠加" }
+        }
+      }
+    }
+  }
+}

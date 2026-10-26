@@ -1,0 +1,146 @@
+{
+  "meta": {
+    "as_of": "2026-09-30",
+    "schema_version": "1.0",
+    "currency": "CNY",
+    "analyst": "示例分析人"
+  },
+  "company": {
+    "name": "示例脑健康科技(虚构)",
+    "stage": "pre_a",
+    "founded_year": 2022,
+    "headcount": 47,
+    "hq": "深圳"
+  },
+  "asset": {
+    "class": "consumer_nondevice",
+    "modality": "noninvasive",
+    "closed_loop": false,
+    "ai_based": true,
+    "snr_db": -9,
+    "indication": ["睡眠监测", "专注力训练"],
+    "classification_code": ""
+  },
+  "milestones": {
+    "items": [
+      { "id": "L0", "status": "done", "date": "2023-02-10", "provided": ["subject", "task", "record"], "evidence_ref": "POC-2023" },
+      { "id": "L1", "status": "done", "date": "2024-06-01", "provided": ["electrical", "emc", "software"], "evidence_ref": "STR-2024" },
+      { "id": "L6", "status": "in_progress", "provided": ["order"], "evidence_ref": "CHANNEL-2026" }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "score": 28,
+      "confidence": "medium",
+      "checks_open": ["D1-02", "D1-07"],
+      "evidence": [
+        { "claim": "对外叙事为「非侵入脑机接口平台」, 实际产品为单向脑电采集 + 报告", "source": "官网与电商详情页", "date": "2026-09-12" },
+        { "claim": "收入 92% 来自睡眠头环硬件, 无闭环反馈环节", "source": "管理报表 2026H1", "date": "2026-08-05" }
+      ],
+      "notes": "叙事与产品形态不一致"
+    },
+    {
+      "id": "D2",
+      "score": 45,
+      "confidence": "low",
+      "checks_open": ["D2-04"],
+      "evidence": [
+        { "claim": "目标人群为健康人群与轻度睡眠困扰人群, 无临床需求证据", "source": "BP v2.0", "date": "2026-07-01" }
+      ]
+    },
+    {
+      "id": "D3",
+      "score": 34,
+      "confidence": "medium",
+      "checks_open": ["D3-03", "D3-05", "D3-11"],
+      "evidence": [
+        { "claim": "睡眠分期算法在自有 800 人数据集上准确率 79%, 未做跨设备验证", "source": "内部技术白皮书", "date": "2026-05-20" },
+        { "claim": "电极与芯片均为外购, 无自研工艺", "source": "BOM 清单", "date": "2026-06-18" }
+      ]
+    },
+    {
+      "id": "D4",
+      "score": 40,
+      "confidence": "medium",
+      "checks_open": [],
+      "evidence": [
+        { "claim": "明确按非医疗器械申报, 包装与说明已标注不用于医疗目的", "source": "产品说明书样张", "date": "2026-04-11" }
+      ]
+    },
+    {
+      "id": "D5",
+      "score": 55,
+      "confidence": "medium",
+      "checks_open": ["D5-07"],
+      "evidence": [
+        { "claim": "2025 年出货 6.2 万台, 客单价 690 元, 复购率 11%", "source": "电商后台导出", "date": "2026-09-05" },
+        { "claim": "扣非净利润 -1800 万元", "source": "管理报表 2025", "date": "2026-03-20" }
+      ]
+    },
+    {
+      "id": "D6",
+      "score": 38,
+      "confidence": "high",
+      "checks_open": [],
+      "evidence": [
+        { "claim": "现金 3200 万元, 月均净流出 210 万元", "source": "银行流水汇总", "date": "2026-09-20" }
+      ]
+    },
+    {
+      "id": "D7",
+      "score": 41,
+      "confidence": "low",
+      "checks_open": ["D7-03", "D7-08"],
+      "evidence": [
+        { "claim": "本轮拟按 6 亿元投前估值融资 8000 万元, 对应 2025 年 P/S 约 15 倍", "source": "TS 草稿", "date": "2026-09-15" }
+      ]
+    },
+    {
+      "id": "D8",
+      "score": 57,
+      "confidence": "medium",
+      "checks_open": ["D8-06"],
+      "evidence": [
+        { "claim": "用户协议与隐私政策已上线, 未做个人信息保护影响评估", "source": "官网协议留档", "date": "2026-08-01" }
+      ]
+    },
+    {
+      "id": "D9",
+      "score": 59,
+      "confidence": "medium",
+      "checks_open": ["D9-05"],
+      "evidence": [
+        { "claim": "创始人来自消费电子供应链, 有量产与渠道经验, 无临床背景", "source": "履历与访谈", "date": "2026-07-22" }
+      ]
+    }
+  ],
+  "redflags": [
+    { "id": "RF-02", "status": "open", "note": "单向采集产品对外称脑机接口, 无反馈通路" },
+    { "id": "RF-06", "status": "open", "note": "消费级资产, 2025 年收入 4200 万元, 却按硬科技期权叙事以 6 亿元投前定价" },
+    { "id": "RF-09", "status": "unknown", "note": "BP 引用三家机构睡眠市场口径, 分别为 210 亿 / 480 亿 / 900 亿, 仅取最高值" }
+  ],
+  "financials": {
+    "cash": 32000000,
+    "undrawn_credit": 0,
+    "burn_monthly": 2100000,
+    "revenue_ttm": 42000000,
+    "revenue_prior_year": 29000000,
+    "gross_margin": 0.42,
+    "rd_ratio": 0.18,
+    "grant_ratio": 0.03,
+    "net_assets": 51000000
+  },
+  "valuation": {
+    "post_money": 680000000,
+    "round_size": 80000000,
+    "last_round_date": "2026-09-15",
+    "liquidation_pref": "1x"
+  },
+  "exit": {
+    "planned_path": "ma",
+    "target_year": 2030,
+    "core_product_phase2_approved": false,
+    "market_cap_expectation": null
+  }
+}

@@ -1,0 +1,49 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  run-examples:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: example 模式(自带告警情形)
+        run: |
+          node scripts/dd_score.mjs --example > /dev/null
+          node scripts/ownership.mjs --example > /dev/null
+
+      - name: 裸跑等效于 example
+        run: |
+          node scripts/dd_score.mjs > /dev/null
+          node scripts/ownership.mjs > /dev/null
+
+      - name: 三份示例输出与仓库内文件一致
+        run: |
+          node scripts/dd_score.mjs examples/01-implant-class3.json > /tmp/01.md
+          node scripts/dd_score.mjs examples/02-consumer-eeg.json  > /tmp/02.md
+          node scripts/ownership.mjs examples/03-cap-table.json    > /tmp/03.md
+          diff -u examples/01-output.md /tmp/01.md
+          diff -u examples/02-output.md /tmp/02.md
+          diff -u examples/03-output.md /tmp/03.md
+
+      - name: 最小输入不应崩溃(只告警)
+        run: |
+          echo '{"meta":{"as_of":"2026-10-01"}}' > /tmp/min.json
+          node scripts/dd_score.mjs /tmp/min.json | grep -q "资料不足"
+          node scripts/ownership.mjs /tmp/min.json > /dev/null
+
+      - name: 末段恒为警告段
+        run: |
+          node scripts/dd_score.mjs --example | tail -20 | grep -q "## 警告"
+          node scripts/ownership.mjs --example | tail -20 | grep -q "## 警告"

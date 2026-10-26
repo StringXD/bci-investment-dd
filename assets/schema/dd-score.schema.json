@@ -1,0 +1,169 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/bci-investment-dd/assets/schema/dd-score.schema.json",
+  "title": "bci-dd-score 输入",
+  "description": "scripts/dd_score.mjs 的输入契约。字段口径与脚本顶部注释逐字一致；未在 required 中的字段缺失时脚本只产出「警告」并继续计算。",
+  "type": "object",
+  "required": ["meta", "company", "asset"],
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["as_of"],
+      "additionalProperties": false,
+      "properties": {
+        "as_of": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "数据截止日, YYYY-MM-DD。必填" },
+        "schema_version": { "type": "string", "default": "1.0" },
+        "currency": { "type": "string", "default": "CNY", "description": "金额币种, 脚本不做汇率换算" },
+        "analyst": { "type": "string", "description": "分析人, 用于输出概要" }
+      }
+    },
+    "company": {
+      "type": "object",
+      "required": ["stage"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "stage": {
+          "enum": ["seed", "angel", "pre_a", "a", "b", "c", "pre_ipo"],
+          "description": "轮次阶段。驱动 STAGE_FACTOR 阶段权重: 种子期重技术与生态位, C 轮后重支付与财务"
+        },
+        "founded_year": { "type": "integer", "minimum": 1950, "maximum": 2100 },
+        "headcount": { "type": "integer", "minimum": 0 },
+        "hq": { "type": "string" }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "required": ["class"],
+      "additionalProperties": false,
+      "description": "资产属性。本字段是整份框架的门禁输入: 它决定适用哪一套估值口径族与里程碑主干路径",
+      "properties": {
+        "class": {
+          "enum": [
+            "implant_class3",
+            "nonimplant_class3",
+            "rehab_class2",
+            "consumer_nondevice",
+            "research_tool",
+            "platform_hybrid"
+          ],
+          "description": "植入式三类 / 非侵入三类 / 二类康复 / 消费级非器械 / 科研服务工具 / 多线并行平台。monitoring_only 由 closed_loop=false 自动降级产生, 不由调用方填写"
+        },
+        "modality": { "enum": ["invasive", "noninvasive", "hybrid", "unknown"] },
+        "closed_loop": {
+          "type": "boolean",
+          "description": "是否存在实时闭环反馈通路(采集 → 解码 → 反馈/刺激)。false 将强制降级为 monitoring_only, 并触发门禁告警与权重修正"
+        },
+        "ai_based": { "type": "boolean", "description": "核心性能是否依赖模型/算法而非硬件与信号质量" },
+        "snr_db": { "type": "number", "description": "信噪比(dB)。非侵入式常见 -15 至 5; 该值仅用于门禁提示, 不参与评分" },
+        "indication": { "type": "array", "items": { "type": "string" }, "description": "适应症清单, 用于提示单一适应症风险" },
+        "classification_code": { "type": "string", "description": "申报的医疗器械分类编码。与 class 的预期编码比对, 不一致时告警" }
+      }
+    },
+    "milestones": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "enum": ["L0", "L1", "L2", "L3", "L4", "L5", "L6"], "description": "里程碑级别, 定义见 references/milestones.md 与脚本 MILESTONES 常量" },
+              "status": { "enum": ["done", "in_progress", "planned", "na"] },
+              "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+              "provided": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "已提供的证据 key, 与 MILESTONES[].evidence[].key 比对求缺。key 清单: L0 subject/task/record; L1 electrical/emc/biocompat/software/dataset; L2 survival/impedance/pathology; L3 ethics/filing/cases/ae; L4 protocol/endpoint/sites/report; L5 acceptance/deficiency/audit; L6 cert/reimburse/order"
+              },
+              "evidence_ref": { "type": "string", "description": "证据包编号或文件名, 供报告引用" }
+            }
+          }
+        }
+      }
+    },
+    "dimensions": {
+      "type": "array",
+      "description": "九维评分。缺评的维度按 0 分计入并告警; checks_open 用于生成证据缺口表",
+      "items": {
+        "type": "object",
+        "required": ["id", "score"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "enum": ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9"] },
+          "score": { "type": "number", "minimum": 0, "maximum": 100, "description": "0-100。评分标尺见 references/sourcing-rules.md: 0-29 不成立 / 30-49 陈述未证实 / 50-69 部分证实 / 70-84 第三方可核 / 85-100 完整闭合" },
+          "confidence": { "enum": ["high", "medium", "low"], "default": "medium", "description": "置信度折价 high 1.0 / medium 0.9 / low 0.75" },
+          "checks_open": { "type": "array", "items": { "type": "string", "pattern": "^D[1-9]-\\d{2}$" }, "description": "未完成的检查项编号, 形如 D3-06" },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["claim", "source"],
+              "additionalProperties": false,
+              "properties": {
+                "claim": { "type": "string", "description": "被证实或待证实的陈述" },
+                "source": { "type": "string", "description": "证据出处。无出处的陈述不得计入分数" },
+                "date": { "type": "string" }
+              }
+            }
+          },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "redflags": {
+      "type": "array",
+      "description": "已登记红旗。id 必须存在于脚本 RF_LIBRARY(RF-01..RF-44); status=open/unknown 的一票否决项直接给出「否决」结论",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^RF-(0[1-9]|[1-3][0-9]|4[0-4])$" },
+          "status": { "enum": ["open", "mitigated", "cleared", "unknown"], "description": "mitigated 表示已解释并缓解, cleared 表示已排除, unknown 表示尚未核实" },
+          "note": { "type": "string", "description": "事实与数值。只写结论不写事实的 note 无法支撑分级" }
+        }
+      }
+    },
+    "financials": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "金额单位由 currency 决定, 默认人民币元。比率字段用 0-1 小数, 填 1-100 时脚本按百分数换算并告警",
+      "properties": {
+        "cash": { "type": "number", "minimum": 0, "description": "现金及等价物" },
+        "undrawn_credit": { "type": "number", "minimum": 0, "description": "未使用授信额度, 计入可动用流动性但单独列示" },
+        "burn_monthly": { "type": "number", "minimum": 0, "description": "近 3 个月月均净流出" },
+        "revenue_ttm": { "type": "number", "minimum": 0, "description": "最近 12 个月收入" },
+        "revenue_prior_year": { "type": "number", "minimum": 0 },
+        "gross_margin": { "type": "number", "minimum": 0, "maximum": 1 },
+        "rd_ratio": { "type": "number", "minimum": 0, "maximum": 1, "description": "研发费用率" },
+        "grant_ratio": { "type": "number", "minimum": 0, "maximum": 1, "description": "政府补助占收入比" },
+        "net_assets": { "type": "number" }
+      }
+    },
+    "valuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "post_money": { "type": "number", "minimum": 0, "description": "最近一轮投后估值" },
+        "round_size": { "type": "number", "minimum": 0 },
+        "last_round_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "liquidation_pref": { "type": "string", "description": "清算优先安排, 如 1x / 1x_np / 2x" }
+      }
+    },
+    "exit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "planned_path": { "enum": ["ipo_star_5", "ipo_hk_18a", "ma", "secondary", "unknown"], "description": "科创板第五套 / 港交所 18A / 产业并购 / 老股转让 / 未明确。硬门槛见 references/07-capital-exit.md" },
+        "target_year": { "type": "integer", "minimum": 2026, "maximum": 2040 },
+        "core_product_phase2_approved": { "type": "boolean", "description": "科创板第五套标准要求之一: 核心产品获准开展二期临床试验" },
+        "market_cap_expectation": { "type": "number", "minimum": 0, "description": "标的方自述的市值预期, 用于与退出门槛比对" }
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+# 依赖
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# 运行时产物
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# 编辑器与 IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 本地尽调数据 —— 绝不入库
+# 真实的尽调输入与报告通常含未公开商业信息, 建议在仓库外单独存放
+local/
+private/
+*.local.json
+data/
+reports/
+!examples/*.json
+!examples/*-output.md
+
+# 临时文件
+tmp/
+.tmp/
+*.tmp

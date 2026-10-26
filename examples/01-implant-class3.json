@@ -1,0 +1,159 @@
+{
+  "meta": {
+    "as_of": "2026-09-30",
+    "schema_version": "1.0",
+    "currency": "CNY",
+    "analyst": "示例分析人"
+  },
+  "company": {
+    "name": "示例神经科技(虚构)",
+    "stage": "b",
+    "founded_year": 2019,
+    "headcount": 126,
+    "hq": "上海"
+  },
+  "asset": {
+    "class": "implant_class3",
+    "modality": "invasive",
+    "closed_loop": true,
+    "ai_based": true,
+    "snr_db": null,
+    "indication": ["颈段脊髓损伤手部运动功能代偿"],
+    "classification_code": "12-00"
+  },
+  "milestones": {
+    "items": [
+      { "id": "L0", "status": "done", "date": "2021-06-30", "provided": ["subject", "task", "record"], "evidence_ref": "POC-2021" },
+      { "id": "L1", "status": "done", "date": "2023-03-15", "provided": ["electrical", "emc", "biocompat", "software", "dataset"], "evidence_ref": "STR-2023" },
+      { "id": "L2", "status": "done", "date": "2024-07-08", "provided": ["survival", "impedance", "pathology"], "evidence_ref": "ANIMAL-2024" },
+      { "id": "L3", "status": "done", "date": "2025-05-20", "provided": ["ethics", "filing", "cases", "ae"], "evidence_ref": "IIT-2025" },
+      { "id": "L4", "status": "in_progress", "provided": ["protocol", "endpoint", "sites"], "evidence_ref": "MULTI-2026" },
+      { "id": "L5", "status": "planned", "provided": [], "evidence_ref": "" },
+      { "id": "L6", "status": "planned", "provided": [], "evidence_ref": "" }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "score": 72,
+      "confidence": "high",
+      "checks_open": ["D1-11"],
+      "evidence": [
+        { "claim": "收入全部来自植入式系统与配套耗材, 无传统设备业务", "source": "2025 年度审计报告附注 5", "date": "2026-04-20" },
+        { "claim": "上一轮投后估值按 L3 完成定价, 未提前计入 L4", "source": "增资协议", "date": "2025-11-10" }
+      ],
+      "notes": "叙事线与收入线一致, 口径未错配"
+    },
+    {
+      "id": "D2",
+      "score": 68,
+      "confidence": "high",
+      "checks_open": [],
+      "evidence": [
+        { "claim": "适应症为颈段脊髓损伤, 国内年新发规模与存量患者数来自第三方流调", "source": "临床方案 1.2 节引用文献", "date": "2025-04-02" },
+        { "claim": "现有替代方案为功能性电刺激与外骨骼, 增益与风险差异已列表比较", "source": "尽调访谈记录 KOL-03", "date": "2026-06-11" }
+      ]
+    },
+    {
+      "id": "D3",
+      "score": 71,
+      "confidence": "medium",
+      "checks_open": ["D3-09"],
+      "evidence": [
+        { "claim": "在线实时闭环, 端到端延迟 78ms, 跨 3 名受试者", "source": "型式检验报告附件 + 内部测试记录", "date": "2026-05-18" },
+        { "claim": "电极、芯片、通信、电源管理、算法、工艺六项均有实物与来源说明", "source": "技术尽调现场记录", "date": "2026-07-02" }
+      ],
+      "notes": "长期阻抗漂移数据仅 9 个月, 未覆盖 24 个月目标"
+    },
+    {
+      "id": "D4",
+      "score": 66,
+      "confidence": "high",
+      "checks_open": ["D4-10", "D4-12"],
+      "evidence": [
+        { "claim": "已取得分类界定沟通记录, 按 12-00 申报", "source": "分类界定申请回执", "date": "2024-12-03" },
+        { "claim": "确证性临床 12 中心 40 例, 主要终点为抓握成功率相对基线提升", "source": "临床方案 v2.1", "date": "2026-02-14" }
+      ]
+    },
+    {
+      "id": "D5",
+      "score": 44,
+      "confidence": "medium",
+      "checks_open": ["D5-04", "D5-08"],
+      "evidence": [
+        { "claim": "已与 6 家三甲医院签署科研合作, 其中 2 家形成采购合同", "source": "合同台账", "date": "2026-09-10" },
+        { "claim": "单台定价 68 万元, 尚无医保编码", "source": "销售政策文件", "date": "2026-08-01" }
+      ],
+      "notes": "支付路径尚未打通, 属获证后风险"
+    },
+    {
+      "id": "D6",
+      "score": 58,
+      "confidence": "high",
+      "checks_open": [],
+      "evidence": [
+        { "claim": "现金 2.1 亿元, 月均净流出 1250 万元", "source": "银行流水汇总与预算表", "date": "2026-09-25" },
+        { "claim": "政府补助占收入 34%, 已在测算中剔除", "source": "审计报告附注 12", "date": "2026-04-20" }
+      ]
+    },
+    {
+      "id": "D7",
+      "score": 52,
+      "confidence": "medium",
+      "checks_open": ["D7-06"],
+      "evidence": [
+        { "claim": "计划 2029 年申报科创板第五套, 核心产品尚未获批开展二期临床", "source": "融资材料与访谈", "date": "2026-08-20" },
+        { "claim": "历史三轮均无回购条款, 仅含优先清算 1x 非参与", "source": "历轮增资协议", "date": "2026-07-15" }
+      ]
+    },
+    {
+      "id": "D8",
+      "score": 61,
+      "confidence": "medium",
+      "checks_open": ["D8-05", "D8-09"],
+      "evidence": [
+        { "claim": "核心专利 11 项, 其中 4 项为高校职务发明受让取得", "source": "专利清单与转让登记", "date": "2026-06-30" },
+        { "claim": "临床数据知情同意模板已备案", "source": "伦理批件附件", "date": "2026-03-08" }
+      ],
+      "notes": "高校转化 N5 收益分配条款尚未书面化"
+    },
+    {
+      "id": "D9",
+      "score": 63,
+      "confidence": "medium",
+      "checks_open": ["D9-11"],
+      "evidence": [
+        { "claim": "创始团队 5 人, 临床与注册负责人均已到岗", "source": "组织架构图与劳动合同", "date": "2026-09-01" },
+        { "claim": "嵌入式与工艺模块各有 2 名以上备份负责人", "source": "技术尽调现场记录", "date": "2026-07-02" }
+      ]
+    }
+  ],
+  "redflags": [
+    { "id": "RF-22", "status": "open", "note": "产品成型但无医保编码与省级挂网, 尚不具可销售条件" },
+    { "id": "RF-35", "status": "cleared", "note": "历轮无对赌与业绩承诺条款" },
+    { "id": "RF-39", "status": "mitigated", "note": "核心 8 人已签署竞业与保密协议, 剩余 3 人在补签" }
+  ],
+  "financials": {
+    "cash": 210000000,
+    "undrawn_credit": 40000000,
+    "burn_monthly": 12500000,
+    "revenue_ttm": 46000000,
+    "revenue_prior_year": 24000000,
+    "gross_margin": 0.61,
+    "rd_ratio": 0.74,
+    "grant_ratio": 0.34,
+    "net_assets": 320000000
+  },
+  "valuation": {
+    "post_money": 2800000000,
+    "round_size": 450000000,
+    "last_round_date": "2025-11-10",
+    "liquidation_pref": "1x_np"
+  },
+  "exit": {
+    "planned_path": "ipo_star_5",
+    "target_year": 2029,
+    "core_product_phase2_approved": false,
+    "market_cap_expectation": 12000000000
+  }
+}
