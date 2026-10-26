@@ -48,7 +48,7 @@ Gate (5 questions)
 Zero dependencies, Node ≥ 18.
 
 ```bash
-git clone https://github.com/<your-org>/bci-investment-dd.git
+git clone https://github.com/StringXD/bci-investment-dd.git
 cd bci-investment-dd
 
 # self-documenting examples (deliberately seeded with warnings)

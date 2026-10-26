@@ -59,7 +59,7 @@ flowchart TD
 零依赖, 只需 Node ≥ 18。
 
 ```bash
-git clone https://github.com/<your-org>/bci-investment-dd.git
+git clone https://github.com/StringXD/bci-investment-dd.git
 cd bci-investment-dd
 
 # 看输入格式与输出结构(内置示例故意埋入多处告警)
