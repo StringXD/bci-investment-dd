@@ -105,9 +105,24 @@ import { createHash } from "node:crypto";
 // 常量区 ——— 编号与阈值口径的唯一真源
 // ============================================================
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const SCHEMA_VERSION = "1.1";
 const CN = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
+
+/**
+ * 红旗影响路径: 等级回答「多严重」, 路径回答「扣在估值模型的哪一项」。
+ * 两者正交 —— 一条一票否决也可能落在「折条款」而不是「归零」:
+ * 回购条款有毒, 资产本身没问题; 相反, 一条警惕级的 IP 归属瑕疵, 只有在
+ * 核心专利不在公司名下时才归零, 落在别人名下则是折倍数。
+ * 归零类一旦成立, 估值结论作废而不是打折, 这是本表存在的唯一理由。
+ */
+const RF_IMPACTS = {
+  gate: { label: "归零", fold: "成功后价值无意义, 概率按 0 处理", order: 0 },
+  time: { label: "折时间", fold: "里程碑滑期: 概率再乘一次折扣, 折现期同时延长", order: 1 },
+  prob: { label: "折概率", fold: "下一里程碑达成率下降, 隐含成功后价值被动抬高", order: 2 },
+  mult: { label: "折倍数", fold: "退出可比下移, 收入法与消费品逻辑的倍数被打下来", order: 3 },
+  deal: { label: "折条款", fold: "估值可不动, 对价结构须调整(分期/回购/托管/竞业)", order: 4 },
+};
 
 /** 资产属性 → 适用的估值口径族 */
 const ASSET_FAMILIES = {
@@ -379,59 +394,59 @@ const VERDICT_INDEX = { hold: 0, veto: 1, watch: 2, conditional: 3, pass: 4, pre
  *  severity: veto(一票否决) | fatal(致命, 需解释) | warn(警惕)
  */
 const RF_LIBRARY = [
-  { id: "RF-01", dim: "G0", severity: "veto", name: "只有论文或 POC 演示, 无任何可运行实体或工程样机", action: "索取样机演示录像(含失败片段)、BOM、测试记录" },
-  { id: "RF-02", dim: "G0", severity: "veto", name: "单向采集或单向刺激产品对外称脑机接口", action: "要求出示闭环链路图与反馈环节实现证据, 对照分类界定四特征逐条核" },
-  { id: "RF-03", dim: "G0", severity: "veto", name: "全部证据来自公司自述(BP / 路演), 无第三方材料", action: "按证据索取清单发正式函, 限期 10 个工作日" },
-  { id: "RF-04", dim: "G0", severity: "warn", name: "门禁阶段即出现估值口径与资产属性明显错配", action: "转估值口径校验, 核对隐含倍数与所在档区间" },
-  { id: "RF-05", dim: "G0", severity: "warn", name: "拒绝提供样机或拒绝现场演示", action: "记录拒绝事实与时点, 列为观察项并写入资料收集状态" },
+  { id: "RF-01", dim: "G0", severity: "veto", impact: "gate", name: "只有论文或 POC 演示, 无任何可运行实体或工程样机", action: "索取样机演示录像(含失败片段)、BOM、测试记录" },
+  { id: "RF-02", dim: "G0", severity: "veto", impact: "gate", name: "单向采集或单向刺激产品对外称脑机接口", action: "要求出示闭环链路图与反馈环节实现证据, 对照分类界定四特征逐条核" },
+  { id: "RF-03", dim: "G0", severity: "veto", impact: "gate", name: "全部证据来自公司自述(BP / 路演), 无第三方材料", action: "按证据索取清单发正式函, 限期 10 个工作日" },
+  { id: "RF-04", dim: "G0", severity: "warn", impact: "mult", name: "门禁阶段即出现估值口径与资产属性明显错配", action: "转估值口径校验, 核对隐含倍数与所在档区间" },
+  { id: "RF-05", dim: "G0", severity: "warn", impact: "prob", name: "拒绝提供样机或拒绝现场演示", action: "记录拒绝事实与时点, 列为观察项并写入资料收集状态" },
 
-  { id: "RF-06", dim: "D1", severity: "veto", name: "消费级或科研级资产、零收入或极低收入, 却按硬科技期权叙事定价", action: "要求拆出与叙事对应的收入线, 按消费品口径重算隐含倍数" },
-  { id: "RF-07", dim: "D1", severity: "veto", name: "无闭环的单向监测产品按 BCI 平台估值", action: "核对闭环链路, 按监测设备口径重估并重排退出预期" },
-  { id: "RF-08", dim: "D1", severity: "warn", name: "七成以上收入来自与核心叙事无关的传统业务, 对外只讲前沿线", action: "按产品线拆收入与毛利, 单独评估前沿线的单位经济" },
-  { id: "RF-09", dim: "D1", severity: "warn", name: "市场规模引用多家机构口径不一且只取最高值", action: "要求同源同口径数据, 并说明 BCI 边界定义差异" },
+  { id: "RF-06", dim: "D1", severity: "veto", impact: "mult", name: "消费级或科研级资产、零收入或极低收入, 却按硬科技期权叙事定价", action: "要求拆出与叙事对应的收入线, 按消费品口径重算隐含倍数" },
+  { id: "RF-07", dim: "D1", severity: "veto", impact: "mult", name: "无闭环的单向监测产品按 BCI 平台估值", action: "核对闭环链路, 按监测设备口径重估并重排退出预期" },
+  { id: "RF-08", dim: "D1", severity: "warn", impact: "mult", name: "七成以上收入来自与核心叙事无关的传统业务, 对外只讲前沿线", action: "按产品线拆收入与毛利, 单独评估前沿线的单位经济" },
+  { id: "RF-09", dim: "D1", severity: "warn", impact: "mult", name: "市场规模引用多家机构口径不一且只取最高值", action: "要求同源同口径数据, 并说明 BCI 边界定义差异" },
 
-  { id: "RF-10", dim: "D2", severity: "veto", name: "风险收益比倒挂: 高侵入方案的功能增益可被低风险方案替代", action: "列出现有替代方案清单, 逐项比较增益与风险" },
-  { id: "RF-11", dim: "D2", severity: "fatal", name: "需求由技术自证, 无独立临床需求证据", action: "提供至少 5 位不相关临床专家的独立访谈记录" },
-  { id: "RF-12", dim: "D2", severity: "warn", name: "单一适应症且支付方缺位(无医保、无自费能力)", action: "核实该适应症的支付路径与单例可支付金额" },
+  { id: "RF-10", dim: "D2", severity: "veto", impact: "gate", name: "风险收益比倒挂: 高侵入方案的功能增益可被低风险方案替代", action: "列出现有替代方案清单, 逐项比较增益与风险" },
+  { id: "RF-11", dim: "D2", severity: "fatal", impact: "prob", name: "需求由技术自证, 无独立临床需求证据", action: "提供至少 5 位不相关临床专家的独立访谈记录" },
+  { id: "RF-12", dim: "D2", severity: "warn", impact: "prob", name: "单一适应症且支付方缺位(无医保、无自费能力)", action: "核实该适应症的支付路径与单例可支付金额" },
 
-  { id: "RF-13", dim: "D3", severity: "veto", name: "仅有离线公开数据集交叉验证, 无在线实时闭环验证", action: "要求在线实时 demo 与跨天跨被试泛化数据" },
-  { id: "RF-14", dim: "D3", severity: "veto", name: "宣称无创 EEG 解码复杂语义、数十汉字或完整思维", action: "要求关闭 EMG / EOG 通道后的对照结果与物理可行性说明" },
-  { id: "RF-15", dim: "D3", severity: "veto", name: "无闭环反馈, 单向监测却称 BCI", action: "指出反馈通路的具体实现环节与延迟指标" },
-  { id: "RF-16", dim: "D3", severity: "fatal", name: "核心性能由通用大模型先验补全, 非神经信号", action: "要求消融实验: 断开神经信号输入后性能下降幅度" },
-  { id: "RF-17", dim: "D3", severity: "warn", name: "实验室效果好, 院内无法稳定使用", action: "要求院内连续多日实测记录与佩戴稳定性数据" },
-  { id: "RF-18", dim: "D3", severity: "warn", name: "六件套缺关键环节(无自研电极工艺、无电源管理方案等)", action: "逐项确认电极、芯片、通信、电源、算法、工艺的实物与来源" },
+  { id: "RF-13", dim: "D3", severity: "veto", impact: "prob", name: "仅有离线公开数据集交叉验证, 无在线实时闭环验证", action: "要求在线实时 demo 与跨天跨被试泛化数据" },
+  { id: "RF-14", dim: "D3", severity: "veto", impact: "gate", name: "宣称无创 EEG 解码复杂语义、数十汉字或完整思维", action: "要求关闭 EMG / EOG 通道后的对照结果与物理可行性说明" },
+  { id: "RF-15", dim: "D3", severity: "veto", impact: "gate", name: "无闭环反馈, 单向监测却称 BCI", action: "指出反馈通路的具体实现环节与延迟指标" },
+  { id: "RF-16", dim: "D3", severity: "fatal", impact: "gate", name: "核心性能由通用大模型先验补全, 非神经信号", action: "要求消融实验: 断开神经信号输入后性能下降幅度" },
+  { id: "RF-17", dim: "D3", severity: "warn", impact: "time", name: "实验室效果好, 院内无法稳定使用", action: "要求院内连续多日实测记录与佩戴稳定性数据" },
+  { id: "RF-18", dim: "D3", severity: "warn", impact: "time", name: "六件套缺关键环节(无自研电极工艺、无电源管理方案等)", action: "逐项确认电极、芯片、通信、电源、算法、工艺的实物与来源" },
 
-  { id: "RF-19", dim: "D4", severity: "veto", name: "无明确注册路径, 或完全按研发思路做产品", action: "要求提交注册策略文件与分类界定申请或沟通记录" },
-  { id: "RF-20", dim: "D4", severity: "veto", name: "临床数据仅个案报道, 无对照、无随访", action: "要求完整方案、对照设计与随访表, 核主要终点" },
-  { id: "RF-21", dim: "D4", severity: "fatal", name: "绕开安全性与长期稳定性谈技术突破", action: "要求大动物在体时长与阻抗稳定性趋势数据" },
-  { id: "RF-22", dim: "D4", severity: "warn", name: "产品成型但不具可销售条件(无医保、无采购路径)", action: "核实医保编码、省级挂网与收费项目立项进度" },
-  { id: "RF-23", dim: "D4", severity: "warn", name: "定型后才启动型式检验, 导致技术路线返工", action: "核对型检启动时点与设计定型时点, 评估返工概率" },
+  { id: "RF-19", dim: "D4", severity: "veto", impact: "time", name: "无明确注册路径, 或完全按研发思路做产品", action: "要求提交注册策略文件与分类界定申请或沟通记录" },
+  { id: "RF-20", dim: "D4", severity: "veto", impact: "prob", name: "临床数据仅个案报道, 无对照、无随访", action: "要求完整方案、对照设计与随访表, 核主要终点" },
+  { id: "RF-21", dim: "D4", severity: "fatal", impact: "prob", name: "绕开安全性与长期稳定性谈技术突破", action: "要求大动物在体时长与阻抗稳定性趋势数据" },
+  { id: "RF-22", dim: "D4", severity: "warn", impact: "mult", name: "产品成型但不具可销售条件(无医保、无采购路径)", action: "核实医保编码、省级挂网与收费项目立项进度" },
+  { id: "RF-23", dim: "D4", severity: "warn", impact: "time", name: "定型后才启动型式检验, 导致技术路线返工", action: "核对型检启动时点与设计定型时点, 评估返工概率" },
 
-  { id: "RF-24", dim: "D5", severity: "veto", name: "讲不清谁付钱、付多少, 只讲技术指标领先", action: "要求列出支付方、单价、采购决策链与已成交合同" },
-  { id: "RF-25", dim: "D5", severity: "fatal", name: "商业计划依赖搞定关键人即可成交", action: "核查是否存在可复制的渠道与标准化销售流程" },
-  { id: "RF-26", dim: "D5", severity: "warn", name: "把合作数量当商业进展, 单场景未闭环", action: "逐笔核对合作是否产生收入或交付验收" },
-  { id: "RF-27", dim: "D5", severity: "warn", name: "单一客户或单一渠道依赖度超过一半", action: "按客户与渠道拆分收入, 评估替换成本" },
+  { id: "RF-24", dim: "D5", severity: "veto", impact: "gate", name: "讲不清谁付钱、付多少, 只讲技术指标领先", action: "要求列出支付方、单价、采购决策链与已成交合同" },
+  { id: "RF-25", dim: "D5", severity: "fatal", impact: "prob", name: "商业计划依赖搞定关键人即可成交", action: "核查是否存在可复制的渠道与标准化销售流程" },
+  { id: "RF-26", dim: "D5", severity: "warn", impact: "prob", name: "把合作数量当商业进展, 单场景未闭环", action: "逐笔核对合作是否产生收入或交付验收" },
+  { id: "RF-27", dim: "D5", severity: "warn", impact: "mult", name: "单一客户或单一渠道依赖度超过一半", action: "按客户与渠道拆分收入, 评估替换成本" },
 
-  { id: "RF-28", dim: "D6", severity: "fatal", name: "跑道不足 6 个月且无已签投资意向书、无过桥安排", action: "要求资金计划表与已签 TS, 评估过桥可行性" },
-  { id: "RF-29", dim: "D6", severity: "fatal", name: "收入主要来自补助与关联方, 经营性现金流长期为负", action: "要求补助与关联交易明细, 剔除后重算收入" },
-  { id: "RF-30", dim: "D6", severity: "warn", name: "无预算管控, 融资后支出随意", action: "索取预算表与实际执行对比, 核对大额支出审批" },
-  { id: "RF-31", dim: "D6", severity: "warn", name: "研发资本化比例显著高于同行, 利润被修饰", action: "要求资本化政策与同行对比, 按费用化口径重算利润" },
+  { id: "RF-28", dim: "D6", severity: "fatal", impact: "gate", name: "跑道不足 6 个月且无已签投资意向书、无过桥安排", action: "要求资金计划表与已签 TS, 评估过桥可行性" },
+  { id: "RF-29", dim: "D6", severity: "fatal", impact: "mult", name: "收入主要来自补助与关联方, 经营性现金流长期为负", action: "要求补助与关联交易明细, 剔除后重算收入" },
+  { id: "RF-30", dim: "D6", severity: "warn", impact: "prob", name: "无预算管控, 融资后支出随意", action: "索取预算表与实际执行对比, 核对大额支出审批" },
+  { id: "RF-31", dim: "D6", severity: "warn", impact: "mult", name: "研发资本化比例显著高于同行, 利润被修饰", action: "要求资本化政策与同行对比, 按费用化口径重算利润" },
 
-  { id: "RF-32", dim: "D7", severity: "veto", name: "融资条款含高额回购或创始人无限连带责任", action: "逐条读取回购触发条件、义务人范围与金额上限" },
-  { id: "RF-33", dim: "D7", severity: "fatal", name: "退出路径单一且不满足任何硬门槛, 却已按可退出定价", action: "对照各通道硬门槛逐条打勾, 反算退出所需条件" },
-  { id: "RF-34", dim: "D7", severity: "warn", name: "存在明显估值倒挂风险的后续轮次安排", action: "做下一轮平轮与降轮情形的稀释与清算优先测算" },
-  { id: "RF-35", dim: "D7", severity: "warn", name: "对赌触发条件与短期经营指标强绑定, 与长周期赛道冲突", action: "核对触发指标与临床周期是否可兼容, 争取里程碑化改写" },
+  { id: "RF-32", dim: "D7", severity: "veto", impact: "deal", name: "融资条款含高额回购或创始人无限连带责任", action: "逐条读取回购触发条件、义务人范围与金额上限" },
+  { id: "RF-33", dim: "D7", severity: "fatal", impact: "mult", name: "退出路径单一且不满足任何硬门槛, 却已按可退出定价", action: "对照各通道硬门槛逐条打勾, 反算退出所需条件" },
+  { id: "RF-34", dim: "D7", severity: "warn", impact: "deal", name: "存在明显估值倒挂风险的后续轮次安排", action: "做下一轮平轮与降轮情形的稀释与清算优先测算" },
+  { id: "RF-35", dim: "D7", severity: "warn", impact: "deal", name: "对赌触发条件与短期经营指标强绑定, 与长周期赛道冲突", action: "核对触发指标与临床周期是否可兼容, 争取里程碑化改写" },
 
-  { id: "RF-36", dim: "D8", severity: "veto", name: "核心专利归属不清, 尤其高校成果转化未走完评估、审批与登记", action: "跑股权与权属链核查, 索取五节点全部文件" },
-  { id: "RF-37", dim: "D8", severity: "veto", name: "数据采集无知情同意, 或临床数据来源不合规", action: "索取知情同意模板、伦理批件与数据来源台账" },
-  { id: "RF-38", dim: "D8", severity: "warn", name: "创始人承担个人连带责任", action: "核对担保文件与个人资产敞口, 评估对决策的影响" },
-  { id: "RF-39", dim: "D8", severity: "warn", name: "核心人员无竞业与保密约束", action: "索取劳动合同、竞业协议与保密协议" },
-  { id: "RF-40", dim: "D8", severity: "warn", name: "对外宣传存在明确功效断言, 或量产宣称与事实不符", action: "留档全部宣传材料, 核对与注册证载明范围是否一致" },
+  { id: "RF-36", dim: "D8", severity: "veto", impact: "gate", name: "核心专利归属不清, 尤其高校成果转化未走完评估、审批与登记", action: "跑股权与权属链核查, 索取五节点全部文件" },
+  { id: "RF-37", dim: "D8", severity: "veto", impact: "gate", name: "数据采集无知情同意, 或临床数据来源不合规", action: "索取知情同意模板、伦理批件与数据来源台账" },
+  { id: "RF-38", dim: "D8", severity: "warn", impact: "deal", name: "创始人承担个人连带责任", action: "核对担保文件与个人资产敞口, 评估对决策的影响" },
+  { id: "RF-39", dim: "D8", severity: "warn", impact: "deal", name: "核心人员无竞业与保密约束", action: "索取劳动合同、竞业协议与保密协议" },
+  { id: "RF-40", dim: "D8", severity: "warn", impact: "prob", name: "对外宣传存在明确功效断言, 或量产宣称与事实不符", action: "留档全部宣传材料, 核对与注册证载明范围是否一致" },
 
-  { id: "RF-41", dim: "D9", severity: "fatal", name: "核心技术人员一人独大, 无备份与文档沉淀", action: "核查关键模块的负责人分布与设计文档完整度" },
-  { id: "RF-42", dim: "D9", severity: "fatal", name: "合伙人无书面协议, 权责不清", action: "索取合伙协议、分工文件与退出机制约定" },
-  { id: "RF-43", dim: "D9", severity: "warn", name: "纯技术团队, 缺临床、注册、销售关键角色", action: "核对组织架构图与关键岗位在岗情况" },
-  { id: "RF-44", dim: "D9", severity: "warn", name: "创始人长期高压透支, 决策质量下降", action: "多轮访谈观察决策一致性, 核查近一年重大决策记录" },
+  { id: "RF-41", dim: "D9", severity: "fatal", impact: "prob", name: "核心技术人员一人独大, 无备份与文档沉淀", action: "核查关键模块的负责人分布与设计文档完整度" },
+  { id: "RF-42", dim: "D9", severity: "fatal", impact: "deal", name: "合伙人无书面协议, 权责不清", action: "索取合伙协议、分工文件与退出机制约定" },
+  { id: "RF-43", dim: "D9", severity: "warn", impact: "prob", name: "纯技术团队, 缺临床、注册、销售关键角色", action: "核对组织架构图与关键岗位在岗情况" },
+  { id: "RF-44", dim: "D9", severity: "warn", impact: "prob", name: "创始人长期高压透支, 决策质量下降", action: "多轮访谈观察决策一致性, 核查近一年重大决策记录" },
 ];
 
 const DIM_NAMES = {
@@ -1535,6 +1550,27 @@ function render(r, P = DEFAULTS) {
   p(`- 致命项未闭合: ${r.fatalOpen.length} 条${r.fatalOpen.length ? `(${r.fatalOpen.map((x) => x.id).join("、")})` : ""}`);
   p("");
 
+  // 影响路径: 把定性红旗接到估值模型上。用 H3 不新增编号 H2, 避免打断与报告模板互锁的节号。
+  if (touched.length) {
+    p("### 影响路径(红旗折在哪)");
+    p("> 等级回答「多严重」, 路径回答「扣在哪」。两者正交: 一条一票否决也可能落在「折条款」而资产本身没问题; 一条警惕级的 IP 瑕疵若核心专利不在公司名下则归零。");
+    p("");
+    p("| 影响路径 | 扣什么 | 条数 | 编号 |");
+    p("|---|---|---|---|");
+    for (const k of Object.keys(RF_IMPACTS).sort((a, b) => RF_IMPACTS[a].order - RF_IMPACTS[b].order)) {
+      const list = touched.filter((x) => x.impact === k);
+      if (!list.length) continue;
+      p(`| ${RF_IMPACTS[k].label} | ${RF_IMPACTS[k].fold} | ${list.length} | ${list.map((x) => x.id).join("、")} |`);
+    }
+    p("");
+    const gates = touched.filter((x) => x.impact === "gate");
+    if (gates.length) {
+      p(`- **归零类 ${gates.length} 条**: 一旦成立, 估值结论作废而不是打折, 后续倍数与概率的讨论一并失去意义。`);
+    }
+    p("- 路径分布不等于严重度: 5 条「折倍数」累积起来是压价, 1 条「归零」是停止。两者不能相加, 也不该放在同一张表里比大小。");
+    p("");
+  }
+
   // ---- 五、现金跑道(条件节)
   if (r.runway !== null) {
     p(sec("现金跑道与里程碑可达性"));
@@ -1575,6 +1611,36 @@ function render(r, P = DEFAULTS) {
       p(`- 隐含倍数 ${num(r.impliedPS, 1)} 落在或低于所在档区间上沿, 未触发口径偏离提示。`);
     }
     p("");
+
+    // 情景与敏感性: 单点估值不可信。用 H3 不新增编号 H2, 避免打断与报告模板互锁的节号。
+    if (r.family.allow_option && r.impliedSuccessValue !== null && r.probNext) {
+      const base = r.probNext;
+      const RATES = [0.08, 0.12, 0.15];
+      p("### 情景与敏感性");
+      p("> 下面两张表只回答「什么变了、它变多少」, 数值全部由脚本算出, 不含人工调整。**脚本给摆动幅度, 不给可比区间** —— 隐含成功后价值是否合理, 须拿同档可比交易来核, 这一步不由脚本出结论。");
+      p("");
+      p(`**一、成功率摆动。** 基准假设下一里程碑(${r.nextId || "-"})达成率 ${num(base, 2)}, 投后 ${money(r.post)}。成功率每降 10 个百分点, 隐含成功后价值抬高的倍数 = 基准率 / (基准率 − 0.10), 也就是说定价没变, 只是把未来的成功想得更值钱。`);
+      p("");
+      p("| 成功率假设 | 隐含成功后价值 | 相对基准 |");
+      p("|---|---|---|");
+      for (const d of [-0.1, 0, 0.1]) {
+        const pv = Math.min(0.99, Math.max(0.01, base + d));
+        const v = r.post / pv;
+        const tag = d === 0 ? " (基准)" : ` (${d > 0 ? "+" : ""}${(d * 100).toFixed(0)}pp)`;
+        p(`| ${num(pv, 2)}${tag} | ${money(v)} | ${num(v / r.impliedSuccessValue, 2)} 倍 |`);
+      }
+      p("");
+      p("**二、延迟折损。** 里程碑滑期不只是晚一点: 概率要再乘一次折扣, 折现期同时延长。下表给「同等投后下, 成功后价值须上浮的倍数」。");
+      p("");
+      p(`| 延迟(月) | ${RATES.map((x) => `折现率 ${(x * 100).toFixed(0)}%`).join(" | ")} |`);
+      p(`|---|${RATES.map(() => "---").join("|")}|`);
+      for (const n of [0, 12, 24]) {
+        p(`| ${n} | ${RATES.map((x) => (n === 0 ? "1.00 倍" : num(Math.pow(1 + x, n / 12), 2) + " 倍")).join(" | ")} |`);
+      }
+      p("");
+      p(`- **延迟 24 个月、折现率 12% 时, 同等投后意味着成功后价值须再高 ${num(Math.pow(1.12, 2), 2)} 倍**; 而这 24 个月里通常还要再融一轮, 稀释与折现在同一段时间里发生, 两者不相抵。这是植入式器械排期最容易被低估的一项, 也是本框架把注册路径放在 D4(权重 0.16, 九维最高)而不是商务维的原因。`);
+      p("");
+    }
     if (r.exit.planned_path) {
       p(`- 计划退出路径: ${EXIT_PATHS[r.exit.planned_path] || r.exit.planned_path}${r.exit.target_year ? `, 目标年份 ${r.exit.target_year}` : ""}`);
     }

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#engineering-conventions)
-[![Version](https://img.shields.io/badge/version-0.3.0-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-informational.svg)](CHANGELOG.md)
 
 > The full document set is in Chinese; this file is the English overview. Contributions of English translations are welcome.
 

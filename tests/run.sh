@@ -112,6 +112,24 @@ const j = JSON.parse(fs.readFileSync(".test-tmp/03.json", "utf8"));
 if (j.schema !== "ownership-output/1") process.exit(1);
 ' > /dev/null 2>&1 && ok "ownership --json 契约一致" || ng "ownership --json 异常"
 
+# ---------- 9. 影响路径与敏感性 ----------
+# 这两块把「定性红旗」接到「估值模型」上, 是本框架唯一让两章互通的机制。
+# 一旦被静默改坏, 报告仍然能出, 但红旗与估值重新变成两张互不相干的表。
+if grep -q '### 影响路径(红旗折在哪)' "$TMP/01.md"; then ok "红旗表附影响路径"; else ng "红旗表缺影响路径(红旗与估值重新断链)"; fi
+# 用 02 断言: 该示例命中了归零类(RF-02), 01 恰好没有命中, 用 01 测会假阴性
+if grep -q '\*\*归零类' "$TMP/02.md"; then ok "归零类单列"; else ng "归零类未单列(会被平均进大表稀释)"; fi
+
+# 五类路径必须全部出现在文档与脚本两侧, 否则「映射」只是部分映射
+FIV=$(grep -c '^| \*\*\(归零\|折时间\|折概率\|折倍数\|折条款\)\*\* ' references/red-flags.md)
+expect_eq "red-flags.md 五类路径汇总齐全" 5 "$FIV"
+
+# 敏感性只对允许期权法的资产类别输出。消费级(02)若也出了这张表, 说明条件节守门失效。
+if grep -q '### 情景与敏感性' "$TMP/01.md"; then ok "植入式资产输出敏感性"; else ng "植入式资产缺敏感性(单点估值不可信)"; fi
+if grep -q '### 情景与敏感性' "$TMP/02.md"; then ng "消费级资产也出了敏感性(期权法不适用却仍折概率)"; else ok "消费级资产正确地不出敏感性"; fi
+
+# 延迟折损必须可复算: 24 个月 / 12% = 1.12^2 = 1.25
+if grep -q '| 24 | 1.17 倍 | 1.25 倍 | 1.32 倍 |' "$TMP/01.md"; then ok "延迟折损表可复算"; else ng "延迟折损表数值不对(1.12^2 应为 1.25)"; fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then echo "全部通过"; else echo "存在失败项"; fi
 exit "$FAIL"
