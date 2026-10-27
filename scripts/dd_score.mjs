@@ -244,6 +244,9 @@ const REV_MULT = {
   monitoring_only: [[0, [1, 3]], [1e8, [1, 2]], [5e8, [0.8, 1.5]]],
 };
 
+/** 估值偏离提示阈值: 隐含倍数相对所在档区间上沿的倍数, 超过即需解释来源 */
+const DEVIATION_FLAG = 1.5;
+
 /** 下一里程碑达成概率占位值(用于反算隐含成功后价值); 需按基金口径校准 */
 const PROB_BY_MILESTONE = { L1: 0.75, L2: 0.6, L3: 0.45, L4: 0.3, L5: 0.18, L6: 0.1 };
 
@@ -702,7 +705,7 @@ function analyze(d) {
     }
   }
   const deviation = impliedPS !== null && band ? impliedPS / band[1] : null;
-  const isMismatch = deviation !== null && deviation > 1.5 && !family.allow_option;
+  const isMismatch = deviation !== null && deviation > DEVIATION_FLAG && !family.allow_option;
 
   // 申报口径下的对照区间: 降级情形下用于说明「按申报口径衡量需要被解释多少」
   let declaredBand = null;
@@ -923,7 +926,7 @@ function render(r) {
       if (r.declaredDeviation !== null && r.declaredClass !== r.familyKey) {
         p(`- 对照申报口径「${r.declaredClass}」的区间上沿 ${r.declaredBand ? r.declaredBand[1] : "-"}, 隐含倍数为 ${num(r.declaredDeviation, 2)} 倍; 该溢价需由明确的临床里程碑跳升来解释, 且必须先解决闭环与分类判定问题。`);
       }
-    } else if (r.deviation !== null && r.deviation > 1.5 && r.family.allow_option) {
+    } else if (r.deviation !== null && r.deviation > DEVIATION_FLAG && r.family.allow_option) {
       p(`- 溢价部分需由里程碑跳升解释: 当前隐含倍数为区间上沿的 ${num(r.deviation, 1)} 倍。`);
       if (r.probNext && r.impliedSuccessValue !== null) {
         p(`- 若下一里程碑(${r.nextId})达成概率按占位值 ${num(r.probNext, 2)} 折算, 当前定价对应的隐含成功后价值为 ${money(r.impliedSuccessValue)}, 请核该值是否落在同档可比区间。`);

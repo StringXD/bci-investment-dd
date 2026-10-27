@@ -102,6 +102,12 @@ const REDEEM_RULES = [
 const ESOP_FLOOR = 10;
 const NOMINEE_FLAG = 5;
 
+/** 表决权杠杆提示阈值: 表决权 / 经济利益, 超过即认定控制依赖协议安排 */
+const LEVERAGE_FLAG = 1.05;
+
+/** 董事会席位与股权错配容差: 席位占比低于表决权占比减该值即视为错配 */
+const BOARD_TOLERANCE = 0.15;
+
 const TYPE_NAMES = {
   founder: "创始人",
   professor: "高校教师",
@@ -380,7 +386,7 @@ function analyze(d) {
   });
   const principalRow = founderRows.length ? founderRows.reduce((a, b) => (b.vote > a.vote ? b : a)) : null;
   const leverage = principalRow && principalRow.pctNow > 0 ? principalRow.vote / principalRow.pctNow : null;
-  if (leverage !== null && leverage > 1.05) {
+  if (leverage !== null && leverage > LEVERAGE_FLAG) {
     w(`创始人「${principalRow.holder}」以 ${pct(principalRow.pctNow)} 的经济利益控制 ${pct(principalRow.vote)} 表决权(杠杆 ${num(leverage, 2)} 倍): 差额来自表决权委托或特别表决权安排, 需核查有效期、可撤销性与失效条件`);
   }
 
@@ -433,7 +439,7 @@ function analyze(d) {
   } else if (boardTotal > 0) {
     w(`创始人提名董事 ${boardFounder}/${boardTotal} 席未过半: 组织控制弱于股权口径, 需结合一票否决事项评估`);
   }
-  if (boardSeats > 0 && coreVote >= 50 && founderSeats / boardSeats < coreVote / 100 - 0.15) {
+  if (boardSeats > 0 && coreVote >= 50 && founderSeats / boardSeats < coreVote / 100 - BOARD_TOLERANCE) {
     w(`席位与股权错配: 表决权 ${pct(coreVote)} 但董事席位占比仅 ${pct((founderSeats / boardSeats) * 100)}`);
   }
 
@@ -560,10 +566,10 @@ function render(r) {
     if (r.principalRow) {
       p(`- 首席创始人「${r.principalRow.holder}」: 经济利益 ${pct(r.principalRow.pctNow)}, 表决权 ${pct(r.principalRow.vote)}, 杠杆率 **${r.leverage !== null ? num(r.leverage, 2) : "-"}**`);
     }
-    if (r.leverage !== null && r.leverage > 1.05) {
+    if (r.leverage !== null && r.leverage > LEVERAGE_FLAG) {
       p(`- 杠杆存在意味着表决权多于经济利益, 来源通常是平台 GP 控制、表决权委托或特别表决权安排。该安排的价值在于稳定性, 风险在于可撤销性: 需核查合伙协议中 GP 更换、退伙与份额转让条款, 以及一致行动协议的有效期与解除条件。`);
     } else {
-      p(`- 表决权与经济利益基本一致(杠杆率不大于 1.05), 控制权主要依赖股权本身而非协议安排。`);
+      p(`- 表决权与经济利益基本一致(杠杆率不大于 ${num(LEVERAGE_FLAG, 2)}), 控制权主要依赖股权本身而非协议安排。`);
     }
     p("");
   }
@@ -625,7 +631,7 @@ function render(r) {
   if (r.nom.some((n) => !n.has_agreement)) concl.push("存在无书面协议的代持");
   if (r.redeemTier && ["严重", "偏高"].includes(r.redeemTier.label)) concl.push(`回购压力${r.redeemTier.label}`);
   if (r.terms.personal_guarantee === true) concl.push("创始人个人连带");
-  if (r.leverage !== null && r.leverage > 1.05) concl.push(`控制权依赖协议杠杆(${num(r.leverage, 2)} 倍)`);
+  if (r.leverage !== null && r.leverage > LEVERAGE_FLAG) concl.push(`控制权依赖协议杠杆(${num(r.leverage, 2)} 倍)`);
   p(concl.length ? `- 主要风险点: ${concl.join("; ")}。` : "- 未发现结构性控制权风险。");
   p(`- 核心组表决权 ${pct(r.coreVote)}, 对应控制线: ${hitsLines(r.coreVote).join("; ") || "未达任何控制线"}`);
   p("");
