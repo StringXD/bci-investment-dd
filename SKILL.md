@@ -54,6 +54,7 @@ agent_created: true
 node scripts/dd_score.mjs data.json      # 门禁 / 里程碑 / 九维 / 红旗 / 跑道 / 估值偏离 / 结论
 node scripts/ownership.mjs cap.json      # 全稀释穿透 / 权属链 / 代持 / 平台杠杆 / 摊薄 / 回购 / 控制权
 node scripts/dd_score.mjs --example      # 看输入格式与输出结构
+node scripts/dd_score.mjs data.json --json   # 机器可读输出: 供排版、多标的对比、跨期跟踪
 
 # 换口径: 用独立参数集, 不改源码
 node scripts/dd_score.mjs data.json --config fund-2026q4.json

@@ -71,6 +71,47 @@ node scripts/ownership.mjs examples/03-cap-table.json --config tests/fixtures/co
 expect_eq "共用参数集喂 ownership" 0 "$?"
 if grep -q "重大影响线" "$TMP/own-ov.md"; then ok "ownership 新增控制线生效"; else ng "ownership 新增控制线未生效"; fi
 
+# ---------- 8. --json 契约 ----------
+# 下游(文档排版/多标的对比/跨期跟踪)依赖 JSON, 因此这里锁三件事:
+# 形状对、可解析、且与文本报告来自同一次计算(分数必须一模一样)。
+node scripts/dd_score.mjs examples/01-implant-class3.json --json > "$TMP/01.json" 2>&1
+node -e '
+const fs = require("fs");
+let j;
+try { j = JSON.parse(fs.readFileSync(".test-tmp/01.json", "utf8")); }
+catch (e) { console.log("NOT-JSON"); process.exit(1); }
+if (j.schema !== "dd-score-output/1") { console.log("BAD-SCHEMA"); process.exit(1); }
+if (typeof j.total !== "number" || !Array.isArray(j.rows) || j.rows.length !== 9) {
+  console.log("BAD-SHAPE"); process.exit(1);
+}
+process.stdout.write(j.total.toFixed(1));
+' > "$TMP/score-json" 2>&1
+expect_eq "--json 是合法 JSON 且形状正确" 0 "$?"
+
+TXT_SCORE=$(grep -o '有效加权分 \*\*[0-9][0-9.]*\*\*' "$TMP/01.md" | grep -o '[0-9][0-9.]*' | head -1)
+JSON_SCORE=$(cat "$TMP/score-json" 2>/dev/null)
+expect_eq "--json 与文本报告分数同源" "$TXT_SCORE" "$JSON_SCORE"
+
+# 终端装饰字符不得混进 JSON: 混进去说明下游还得再解析一遍文本
+if grep -qE '^=|SCORECARD|^\s*\|' "$TMP/01.json"; then ng "--json 混入终端装饰"; else ok "--json 不含终端装饰"; fi
+
+# 参数集指纹必须随 --json 一起走, 否则下游无法在报告上标注口径
+node scripts/dd_score.mjs examples/01-implant-class3.json --json --config tests/fixtures/config-override.json > "$TMP/01-cfg.json"
+node -e '
+const fs = require("fs");
+const j = JSON.parse(fs.readFileSync(".test-tmp/01-cfg.json", "utf8"));
+if (!j.paramsMeta || !/^[a-z0-9-]+@[0-9a-f]{8}$/.test(j.paramsMeta.id + "@" + j.paramsMeta.hash8)) {
+  console.log("NO-PARAMS-META"); process.exit(1);
+}
+' > /dev/null 2>&1 && ok "--json 携带参数集指纹" || ng "--json 缺参数集指纹"
+
+node scripts/ownership.mjs examples/03-cap-table.json --json > "$TMP/03.json" 2>&1
+node -e '
+const fs = require("fs");
+const j = JSON.parse(fs.readFileSync(".test-tmp/03.json", "utf8"));
+if (j.schema !== "ownership-output/1") process.exit(1);
+' > /dev/null 2>&1 && ok "ownership --json 契约一致" || ng "ownership --json 异常"
+
 echo
 if [ "$FAIL" -eq 0 ]; then echo "全部通过"; else echo "存在失败项"; fi
 exit "$FAIL"

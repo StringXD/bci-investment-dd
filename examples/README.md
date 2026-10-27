@@ -29,6 +29,18 @@ node scripts/dd_score.mjs examples/01-implant-class3.json --config tests/fixture
 
 覆盖生效后, banner 会多出一段 `| params: fixture-override@<hash8>`, 「输入概要」后也会多一段 `### 参数口径与溯源`。这两处出现与否, 是判断「这一份报告到底用了哪套尺子」的唯一依据。
 
+## 机器可读输出
+
+三份 `*-output.md` 是给人读的。要拿去做版式转换、多标的排序或跨期对比, 用 `--json`:
+
+```bash
+node scripts/dd_score.mjs examples/01-implant-class3.json --json
+```
+
+它输出 `{ schema, script_version, ... }`, 其余字段与终端报告同源 —— `tests/run.sh` 断言两者的分数必须完全一致。`schema` 为 `dd-score-output/1`(dd_score)或 `ownership-output/1`(ownership)。
+
+不要用正则去抠 `*-output.md` 里的数字: 排版会变, 字段不会。
+
 ## 怎么读
 
 1. **先看第二节(里程碑)与第五节(跑道)。** 这两节决定时间与钱能不能对上, 是长周期赛道最先出问题的地方。

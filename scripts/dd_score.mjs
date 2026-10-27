@@ -105,7 +105,7 @@ import { createHash } from "node:crypto";
 // 常量区 ——— 编号与阈值口径的唯一真源
 // ============================================================
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const SCHEMA_VERSION = "1.1";
 const CN = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
 
@@ -1633,7 +1633,7 @@ function render(r, P = DEFAULTS) {
 // ============================================================
 
 const argv = process.argv.slice(2);
-const KNOWN_FLAGS = ["--example", "--print-defaults", "--normalize-weights"];
+const KNOWN_FLAGS = ["--example", "--print-defaults", "--normalize-weights", "--json"];
 
 let configPath = null;
 const rest = [];
@@ -1664,7 +1664,27 @@ if (unknown) {
 const wantExample = rest.includes("--example");
 const wantPrint = rest.includes("--print-defaults");
 const normalizeWeights = rest.includes("--normalize-weights");
+const wantJson = rest.includes("--json");
 const positional = rest.filter((a) => !a.startsWith("--"));
+
+/**
+ * 输出出口。--json 时输出机器可读对象, 否则输出终端报告。
+ *
+ * 为什么要有 JSON: 终端报告是给人扫的, 但下游(版式转换、多标的对比、
+ * 跨期跟踪、投委会幻灯片)都需要同一份结构化结果。让下游去解析终端
+ * 文本等于把渲染细节变成接口, 任何一次排版调整都会打断下游。
+ * JSON 是稳定契约, 排版是自由变量。
+ */
+const OUTPUT_SCHEMA = "dd-score-output/1";
+const emit = (r) => {
+  if (!wantJson) {
+    process.stdout.write(render(r, P));
+    return;
+  }
+  process.stdout.write(
+    JSON.stringify({ schema: OUTPUT_SCHEMA, script_version: VERSION, ...r }, null, 2) + "\n"
+  );
+};
 
 if (wantPrint) {
   if (configPath) {
@@ -1712,7 +1732,7 @@ const P = resolveParams(cfg, { normalizeWeights, hash8 });
 
 // ---- 无输入文件时以内置示例演示参数效果(便于快速看口径差异)
 if (!positional.length) {
-  process.stdout.write(render(analyze(EXAMPLE_OBJ, P), P));
+  emit(analyze(EXAMPLE_OBJ, P));
   process.exit(0);
 }
 
@@ -1743,4 +1763,4 @@ if (data.meta.params_ref) {
     extra.push(`输入声明 meta.params_ref=${data.meta.params_ref}, 实际加载 ${actual}: 复算基线已失效`);
   }
 }
-process.stdout.write(render(analyze(data, P, extra), P));
+emit(analyze(data, P, extra));

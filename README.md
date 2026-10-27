@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#工程约定)
-[![Version](https://img.shields.io/badge/version-0.2.0-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-informational.svg)](CHANGELOG.md)
 
 ---
 
@@ -90,10 +90,25 @@ node scripts/dd_score.mjs data.json --config fund-2026q4.json
 参数集不合法时脚本以 `exit 2` 中止并逐条列出 `V-01` 至 `V-19` 的编号 —— **参数错了, 算出来的每个数都是错的, 不存在「部分可用」**。空参数集与默认值往返的等价性, 以及三份示例的可复现性, 由 `bash tests/run.sh` 守护:
 
 ```bash
-bash tests/run.sh    # 22 项断言
+bash tests/run.sh    # 27 项断言
 ```
 
 有一类参数锁死不可覆盖: 红旗的编号与等级、`allow_option`、门禁判定逻辑、里程碑主干路径、监管编码。允许改红旗等级等于允许把一票否决降级 —— 这是框架唯一不开的口子。
+
+### 机器可读输出
+
+终端报告是给人扫的。要排版成可交付文档、把多个标的排成一列、看同一标的跨季度怎么变, 都需要结构化结果:
+
+```bash
+node scripts/dd_score.mjs data.json --json
+node scripts/ownership.mjs cap.json --json
+```
+
+输出 `{ schema, script_version, ... }`, 其中 `schema` 为 `dd-score-output/1` 或 `ownership-output/1`, 其余字段即 `analyze()` 的全部中间结果: 维度行与加权贡献、未完成检查项、红旗状态、跑道档位、隐含倍数与偏离、结论与封顶原因、证据缺口、警告, 以及 `paramsMeta`(参数集指纹与溯源状态)。
+
+为什么不直接解析终端 Markdown: 那等于把排版细节变成接口。报告里调一次列宽、换一个标点, 所有下游就静默断掉, 而且错得很像对。JSON 的字段在次版本内只增不减, 下游应忽略不认识的键。
+
+`--json` 与默认输出来自**同一次计算**, `tests/run.sh` 断言两者的分数必须完全一致 —— 否则就等于维护了两套逻辑。
 
 ## 目录结构
 

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#engineering-conventions)
-[![Version](https://img.shields.io/badge/version-0.2.0-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-informational.svg)](CHANGELOG.md)
 
 > The full document set is in Chinese; this file is the English overview. Contributions of English translations are welcome.
 
@@ -79,6 +79,21 @@ Why not put the parameters inside the target file: parameters expire quarterly, 
 An invalid parameter set aborts with `exit 2` and lists the failing `V-01`–`V-19` rule codes. **If the parameters are wrong, every number downstream is wrong; there is no partial use.** Equivalence of empty/default parameter sets and reproducibility of the three examples are enforced by `bash tests/run.sh`.
 
 Some parameters are locked: red-flag IDs and severities, `allow_option`, the gate logic, milestone paths and classification codes. Allowing severity overrides would mean allowing a veto-class red flag to be downgraded — the one door this framework keeps shut.
+
+### Machine-readable output
+
+The terminal report is meant to be scanned by a human. Turning it into a formatted deliverable, ranking several targets side by side, or tracking one target across quarters all need structured output:
+
+```bash
+node scripts/dd_score.mjs data.json --json
+node scripts/ownership.mjs cap.json --json
+```
+
+This emits `{ schema, script_version, ... }` where `schema` is `dd-score-output/1` or `ownership-output/1`, and the remaining fields are the full intermediate result of `analyze()`: dimension rows and weighted contributions, open checklist items, red-flag states, runway tier, implied multiple and deviation, verdict with cap reasons, evidence gaps, warnings, plus `paramsMeta` (parameter-set fingerprint and provenance status).
+
+Why not parse the terminal Markdown instead: that turns formatting details into an interface. Change a column width or a punctuation mark and every downstream consumer breaks silently — and looks correct while doing so. JSON fields only grow within a minor version; ignore keys you do not recognise.
+
+`--json` and the default output come from the **same computation**; `tests/run.sh` asserts the two scores must match exactly, otherwise it would mean maintaining two sets of logic.
 
 ## The nine dimensions
 

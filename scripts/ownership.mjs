@@ -88,7 +88,7 @@ import { createHash } from "node:crypto";
 // 常量区
 // ============================================================
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const CN = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
 
 /** 控制线: [阈值, 简称, 释义] */
@@ -946,7 +946,7 @@ function render(r, P = DEFAULTS) {
 // ============================================================
 
 const argv = process.argv.slice(2);
-const KNOWN_FLAGS = ["--example", "--print-defaults"];
+const KNOWN_FLAGS = ["--example", "--print-defaults", "--json"];
 
 let configPath = null;
 const rest = [];
@@ -976,7 +976,21 @@ if (unknown) {
 }
 const wantExample = rest.includes("--example");
 const wantPrint = rest.includes("--print-defaults");
+const wantJson = rest.includes("--json");
 const positional = rest.filter((a) => !a.startsWith("--"));
+
+/** 输出出口。--json 输出机器可读对象, 否则输出终端报告。
+ *  与 dd_score 同一约定: 终端排版是自由变量, JSON 才是稳定契约。 */
+const OUTPUT_SCHEMA = "ownership-output/1";
+const emit = (r) => {
+  if (!wantJson) {
+    process.stdout.write(render(r, P));
+    return;
+  }
+  process.stdout.write(
+    JSON.stringify({ schema: OUTPUT_SCHEMA, script_version: VERSION, ...r }, null, 2) + "\n"
+  );
+};
 
 if (wantPrint) {
   if (configPath) {
@@ -1023,7 +1037,7 @@ if (configPath) {
 const P = resolveParams(cfg, { hash8 });
 
 if (!positional.length) {
-  process.stdout.write(render(analyze(EXAMPLE_OBJ, P), P));
+  emit(analyze(EXAMPLE_OBJ, P));
   process.exit(0);
 }
 
@@ -1053,4 +1067,4 @@ if (data.meta.params_ref) {
     extra.push(`输入声明 meta.params_ref=${data.meta.params_ref}, 实际加载 ${actual}: 复算基线已失效`);
   }
 }
-process.stdout.write(render(analyze(data, P, extra), P));
+emit(analyze(data, P, extra));
