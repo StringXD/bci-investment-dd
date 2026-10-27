@@ -30,3 +30,4 @@ reports/
 tmp/
 .tmp/
 *.tmp
+.test-tmp/

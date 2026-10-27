@@ -1,0 +1,12 @@
+{
+  "_doc": "负向夹具: 试图通过 rf_extensions 新增一条 severity=veto 的自定义否决项。只允许 warn, 故应被 V-01 拒绝。",
+  "config_version": "1.0",
+  "id": "fixture-rf-downgrade",
+  "label": "试图新增一票否决项",
+  "as_of": "2026-10-01",
+  "params": {
+    "rf_extensions": [
+      { "id": "RF-45", "severity": "veto", "dim": "EXT", "name": "自定义否决项", "action": "无" }
+    ]
+  }
+}

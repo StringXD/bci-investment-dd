@@ -13,7 +13,12 @@
       "additionalProperties": false,
       "properties": {
         "as_of": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "股权基准日, 须与章程/工商登记/期权台账的截止日一致" },
-        "currency": { "type": "string", "default": "CNY" }
+        "currency": { "type": "string", "default": "CNY" },
+        "params_ref": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,39}@[0-9a-f]{8}$",
+          "description": "本次计算所用参数集的 <id>@<hash8>, 由 --config 加载时输出的 banner 行给出。参数集本身不写进本文件: 它按季度变化且可能属于某一家机构, 与股权事实共用文件会在转发时泄露机构口径"
+        }
       }
     },
     "cap_table": {

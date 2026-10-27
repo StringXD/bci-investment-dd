@@ -1,0 +1,63 @@
+{
+  "_doc": "覆盖行为测试夹具。数值与来源全部为虚构占位, 仅用于验证注入链路与校验规则, 不得作为任何真实口径或可比参照。",
+  "config_version": "1.0",
+  "id": "fixture-override",
+  "label": "覆盖行为测试夹具(非真实口径)",
+  "as_of": "2026-09-30",
+  "effective_from": "2026-10-01",
+  "expires_on": "2027-03-31",
+  "params": {
+    "weights": { "D1": 0.1, "D2": 0.07, "D3": 0.13, "D4": 0.19, "D5": 0.13, "D6": 0.13, "D7": 0.09, "D8": 0.09, "D9": 0.07 },
+    "rev_mult": {
+      "implant_class3": [[0, [7, 12]], [100000000, [4.5, 8.5]], [500000000, [3, 5.5]]],
+      "nonimplant_class3": [[0, [7, 14]], [100000000, [5, 9]], [500000000, [3, 6]]],
+      "platform_hybrid": [[0, [6, 13]], [100000000, [4, 9]], [500000000, [3, 6]]],
+      "rehab_class2": [[0, [3, 6]], [100000000, [2, 4]], [500000000, [1.5, 3]]],
+      "consumer_nondevice": [[0, [1.5, 4]], [100000000, [1, 2.5]], [500000000, [0.8, 2]]],
+      "research_tool": [[0, [2, 5]], [100000000, [1.5, 3]], [500000000, [1, 2]]],
+      "monitoring_only": [[0, [1, 3]], [100000000, [1, 2]], [500000000, [0.8, 1.5]]]
+    },
+    "milestones": {
+      "months": { "default": { "L0": [3, 9], "L1": [6, 12], "L2": [9, 18], "L3": [9, 18], "L4": [21, 40], "L5": [9, 18], "L6": [3, 12] } },
+      "buffer": { "L4": 1.3 }
+    },
+    "verdict_thresholds": { "preferred": 88, "pass": 72, "conditional": 58 },
+    "ownership": {
+      "leverage_flag": 1.3,
+      "redeem_rules": [[4, "极高", "夹具档位"], [2, "高", "夹具档位"], [0.8, "可覆盖", "夹具档位"]],
+      "scenarios": [
+        { "label": "基准", "dilution_pct": 0, "esop_topup_pct": 0 },
+        { "label": "下一轮稀释 12%", "dilution_pct": 12, "esop_topup_pct": 4 }
+      ],
+      "lines_add": [{ "threshold": 20, "short": "重大影响线", "desc": "夹具新增观测线" }]
+    }
+  },
+  "sources": [
+    {
+      "id": "S-FIX-01",
+      "claim": "夹具占位: 非真实数据",
+      "source": "tests/fixtures",
+      "level": "二级",
+      "published": "2026-09-01",
+      "verified": "2026-09-30",
+      "status": "已核",
+      "proxy": true
+    },
+    {
+      "id": "S-FIX-02",
+      "claim": "夹具占位: 非真实数据",
+      "source": "tests/fixtures",
+      "level": "三级",
+      "published": "2026-08-15",
+      "verified": "2026-09-30",
+      "status": "已核",
+      "proxy": true
+    }
+  ],
+  "param_sources": {
+    "weights": ["S-FIX-01"],
+    "rev_mult.implant_class3": ["S-FIX-01", "S-FIX-02"],
+    "ownership.leverage_flag": ["S-FIX-01"],
+    "ownership.redeem_rules": ["S-FIX-01"]
+  }
+}

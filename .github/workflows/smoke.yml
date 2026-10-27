@@ -47,3 +47,6 @@ jobs:
         run: |
           node scripts/dd_score.mjs --example | tail -20 | grep -q "## 警告"
           node scripts/ownership.mjs --example | tail -20 | grep -q "## 警告"
+
+      - name: 参数集注入与回归断言
+        run: bash tests/run.sh

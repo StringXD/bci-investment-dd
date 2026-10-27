@@ -1,0 +1,25 @@
+{
+  "_doc": "等价性测试夹具: 所有块全为 null, 应被解析为「未覆盖」, 输出必须与不传 --config 逐字相同。",
+  "config_version": "1.0",
+  "id": "fixture-identity",
+  "label": "全空参数集(等价性测试)",
+  "as_of": "2026-10-01",
+  "effective_from": "2026-10-01",
+  "expires_on": "2030-12-31",
+  "params": {
+    "weights": { "D1": null, "D2": null, "D3": null, "D4": null, "D5": null, "D6": null, "D7": null, "D8": null, "D9": null },
+    "stage_factor": { "seed": null },
+    "gate_factor": { "implant_class3": null },
+    "rev_mult": { "implant_class3": null },
+    "milestones": { "months": null, "buffer": null },
+    "prob": null,
+    "confidence": null,
+    "runway": { "rules": null, "floor_months": null },
+    "w_cap": null,
+    "deviation_threshold": null,
+    "verdict_thresholds": null,
+    "ownership": null
+  },
+  "sources": [],
+  "param_sources": {}
+}

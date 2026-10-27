@@ -1,16 +1,62 @@
 #!/usr/bin/env node
 /**
- * bci-dd-score v0.1.0 — 脑机接口投资尽调评分与门禁
+ * bci-dd-score v0.2.0 — 脑机接口投资尽调评分与门禁
  * 仅用 Node 标准库, 无第三方依赖 (node >= 18)。
  *
  * 用法:
  *   node scripts/dd_score.mjs                   # 裸跑 = --example
  *   node scripts/dd_score.mjs --example         # 内置示例(故意埋入 9 处告警情形)
  *   node scripts/dd_score.mjs data.json         # 计算并输出 Markdown
+ *   node scripts/dd_score.mjs data.json --config fund.json    # 用外部参数集计算
+ *   node scripts/dd_score.mjs --print-defaults # 打印内置参数为一份合法 config
+ *
+ * 参数集(--config)与标的输入(data.json)是两件事, 必须分开:
+ *   - 标的输入记录「被评对象的事实」, 生命周期按项目;
+ *   - 参数集记录「方法学假设」, 生命周期按季度, 且可能属于某一家机构。
+ *   - 二者共用一个文件会导致: 转发标的做 peer review 时连带泄露机构权重;
+ *     参数变更与标的变化无法区分, 报告的复算基线失去意义。
+ *   故本脚本不接受把参数写进标的输入, 只接受独立文件。
+ *
+ * config 文件字段:
+ *   config_version  string   必填, 当前 "1.0"
+ *   id              string   必填, ^[a-z0-9][a-z0-9-]{2,39}$
+ *   label           string   必填, 人类可读名
+ *   as_of           string   参数观测截止日 YYYY-MM-DD
+ *   effective_from  string   生效日
+ *   expires_on      string   失效日; 早于运行日时输出标 STALE 并告警
+ *   basis           {upstream_version?, builtin?}   内置来源标记
+ *   params          见下; 每块要么全给, 要么全为 null(视为未覆盖)
+ *   sources         [{id, claim, source, level, published?, verified?, status?, proxy?}]
+ *   param_sources   {参数路径: [source_id,...]}    溯源声明
+ *
+ * params 可覆盖块(每块独立 $defs):
+ *   weights {D1..D9}                       九维基础权重, 和必须 = 1
+ *   stage_factor {seed|angel|pre_a|a|b|c|pre_ipo: {D1..D9}}
+ *   gate_factor {7 个族名: {D1..D9}}        implant_class3 允许为空对象
+ *   rev_mult {7 个族名: [[收入档, [下限,上限]], ...]}
+ *   milestones {months: {族名: {L0..L6: [lo,hi]}}, buffer: {L4?, L5?, default?}}
+ *   prob {L1..L6}                           下一里程碑达成概率, 必须严格递减
+ *   confidence {high, medium, low}          high 必须 = 1.0
+ *   runway {rules: [[阈值, 标签, 释义]], floor_months}
+ *   w_cap number                            单维权重上限, >= 0.15
+ *   deviation_threshold number              估值偏离提示阈值
+ *   verdict_thresholds {preferred, pass, conditional}   0 < c < p < pf <= 100
+ *   ownership {...}                         供 ownership.mjs 消费, 本脚本忽略
+ *   rf_extensions []                        自定义警惕项, 只允许 severity=warn
+ *
+ * 锁死项(不可覆盖, 覆盖即 exit 2):
+ *   RF_LIBRARY 的 id / severity / dim    —— 允许改 severity 等于允许把一票否决降级
+ *   ASSET_FAMILIES 的 allow_option       —— 允许改等于允许给消费级套用期权法
+ *   门禁判定逻辑本身                     —— 是判定规则不是参数
+ *   MILESTONE_PATHS / CLASS_CODE_EXPECT  —— 一级监管事实
+ *   VERDICTS 的名称与优先级              —— 报告语言, 且 hold / veto 语义不可调
+ *   MILESTONES 的 evidence[].key         —— schema enum 与报告分母
+ *   DIM_IDS / 节号                        —— 与报告模板互锁
  *
  * 输入 JSON 字段:
- *   meta        {as_of, schema_version?, currency?, analyst?}
+ *   meta        {as_of, schema_version?, currency?, analyst?, params_ref?}
  *               as_of 必填(数据截止日, YYYY-MM-DD)
+ *               params_ref 可选, 记录本次计算所用参数集 <id>@<hash8>
  *   company     {name?, stage, founded_year?, headcount?, hq?}
  *               stage ∈ seed|angel|pre_a|a|b|c|pre_ipo
  *   asset       {class, modality, closed_loop, ai_based?, snr_db?, indication?, classification_code?}
@@ -34,26 +80,33 @@
  *               planned_path ∈ ipo_star_5|ipo_hk_18a|ma|secondary|unknown
  *
  * 输出节序(契约, 报告模板按此对齐):
- *   输入概要 → 一 资产属性门禁 → 二 里程碑定位(L0-L6) → 三 九维加权评分
+ *   输入概要 [→ 参数口径与溯源(H3, 仅当参数与内置默认不同时出现)]
+ *   → 一 资产属性门禁 → 二 里程碑定位(L0-L6) → 三 九维加权评分
  *   → 四 致命红旗筛查 → 五 现金跑道与里程碑可达性 → 六 估值口径与偏离提示
  *   → 七 结论与证据缺口 → 警告
+ *   参数溯源段刻意用 H3 且不占用中文序号: 13 个编号 H2 与 assets/templates/
+ *   report-template.md 逐字互锁, 新增编号 H2 会破坏该契约与 CI 断言。
+ *
+ * 退出码: 0 正常 | 1 输入读取或解析失败 | 2 参数集非法(--config 与 --example 互斥同此)
  *
  * 纪律:
  *   - 所有数字以本脚本 stdout 为准, 禁止口算覆盖或改写。
  *   - 任何输入缺失只产出「警告」, 不中断计算: 能算多少算多少。
+ *   - 参数集非法一律中断(exit 2): 参数错了, 算出来的每个数都是错的, 不存在「部分可用」。
  *   - 权重与阈值是方法学参数, 需按基金口径自行校准; 本脚本不提供估值结论。
  *   - 本脚本输出为尽调流程指标与偏离提示, 不构成估值结论、不构成投资建议、
  *     不构成法律、监管或会计意见。
  */
 
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 // ============================================================
 // 常量区 ——— 编号与阈值口径的唯一真源
 // ============================================================
 
-const VERSION = "0.1.0";
-const SCHEMA_VERSION = "1.0";
+const VERSION = "0.2.0";
+const SCHEMA_VERSION = "1.1";
 const CN = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
 
 /** 资产属性 → 适用的估值口径族 */
@@ -249,6 +302,59 @@ const DEVIATION_FLAG = 1.5;
 
 /** 下一里程碑达成概率占位值(用于反算隐含成功后价值); 需按基金口径校准 */
 const PROB_BY_MILESTONE = { L1: 0.75, L2: 0.6, L3: 0.45, L4: 0.3, L5: 0.18, L6: 0.1 };
+
+/** 结论分级阈值: 低于 conditional 为观察, 介于 conditional 与 pass 之间为有条件通过 */
+const VERDICT_THRESHOLDS = { preferred: 85, pass: 70, conditional: 55 };
+
+/** 里程碑典型耗时的按族口径。默认只有 default 一族; 同一 L 级在不同资产类别
+ *  不是一个东西(二类康复不走大动物与确证性临床), 故允许按族覆盖。 */
+const MILESTONE_MONTHS = {
+  default: Object.fromEntries(MILESTONES.map((m) => [m.id, m.months])),
+};
+
+/**
+ * 内置默认参数集: 所有可被 --config 覆盖的方法学参数集中在此。
+ * 冻结以防运行期被意外改写; 嵌套对象为引用共享, analyze 只读不写。
+ * 若某份 config 解析结果与本对象值完全一致, 视为「未覆盖」, 输出不含参数段。
+ */
+const DEFAULTS = Object.freeze({
+  WEIGHTS,
+  STAGE_FACTOR,
+  GATE_FACTOR,
+  REV_MULT,
+  MILESTONE_MONTHS,
+  MILESTONE_BUFFER,
+  PROB_BY_MILESTONE,
+  CONF_DISCOUNT,
+  W_CAP,
+  RUNWAY_RULES,
+  RUNWAY_FLOOR_MONTHS,
+  DEVIATION_FLAG,
+  VERDICT_THRESHOLDS,
+});
+
+/** config 顶层允许的键(V-01 用): 多一个即报错, 防止拼写错误被静默忽略 */
+const CONFIG_KEYS = ["config_version", "id", "label", "as_of", "effective_from", "expires_on", "basis", "params", "sources", "param_sources", "derived_from", "_doc"];
+
+/** config.params 允许的键(V-01 用) */
+const PARAM_KEYS = ["weights", "stage_factor", "gate_factor", "rev_mult", "milestones", "prob", "confidence", "runway", "w_cap", "deviation_threshold", "verdict_thresholds", "ownership", "rf_extensions", "_doc"];
+
+/** 覆盖块 → 中文标注(V-13 与参数段显示用) */
+const BLOCK_LABELS = {
+  weights: ["WEIGHTS", 9],
+  stage_factor: ["STAGE_FACTOR", "7×9"],
+  gate_factor: ["GATE_FACTOR", "7族"],
+  rev_mult: ["REV_MULT", "7族×3档"],
+  milestones_months: ["MILESTONES.months", "7族"],
+  milestones_buffer: ["MILESTONE_BUFFER", 3],
+  prob: ["PROB_BY_MILESTONE", 6],
+  confidence: ["CONF_DISCOUNT", 3],
+  runway_rules: ["RUNWAY_RULES", 3],
+  runway_floor: ["RUNWAY_FLOOR_MONTHS", 1],
+  w_cap: ["W_CAP", 1],
+  deviation_threshold: ["DEVIATION_FLAG", 1],
+  verdict_thresholds: ["VERDICT_THRESHOLDS", 3],
+};
 
 const EXIT_PATHS = {
   ipo_star_5: "科创板第五套标准",
@@ -464,12 +570,518 @@ function mid(arr) {
 }
 
 // ============================================================
+// 参数集: 校验与合并
+// ============================================================
+
+const isPlain = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+const hasVal = (x) => x !== undefined && x !== null;
+const today = () => new Date().toISOString().slice(0, 10);
+
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 1e-9;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  if (isPlain(a) && isPlain(b)) {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    return ka.every((k) => deepEqual(a[k], b[k]));
+  }
+  return false;
+}
+
+/** 块内是否至少有一个非 null 值。数组视为一个整体: 非空即已声明 */
+function blockDeclared(blk) {
+  if (Array.isArray(blk)) return blk.length > 0;
+  return isPlain(blk) && Object.keys(blk).some((k) => k !== "_doc" && hasVal(blk[k]));
+}
+
+/** 块内是否「填了一部分」: 整块覆盖只允许全给或全不给, 半填会让剩余项静默沿用默认 */
+function blockPartial(blk) {
+  if (!isPlain(blk)) return false;
+  const keys = Object.keys(blk).filter((k) => k !== "_doc");
+  if (!keys.length) return false;
+  const filled = keys.filter((k) => hasVal(blk[k]));
+  return filled.length > 0 && filled.length < keys.length;
+}
+
+/**
+ * 校验参数集。返回 {errors, warns, stale, proxyCount, sourceRefs}。
+ * errors 非空即 exit 2 —— 参数错了, 算出来的每个数都是错的, 不存在「部分可用」。
+ */
+function validateConfig(cfg, opts = {}) {
+  const errors = [];
+  const warns = [];
+  const E = (c, m) => errors.push(`${c} ${m}`);
+  const W = (c, m) => warns.push(`${c} ${m}`);
+
+  if (!isPlain(cfg)) {
+    E("V-01", "参数集必须是一个 JSON 对象");
+    return { errors, warns, stale: false, proxyCount: 0, sourceRefs: [] };
+  }
+
+  // ---- V-01 未知键
+  for (const k of Object.keys(cfg)) {
+    if (!CONFIG_KEYS.includes(k)) E("V-01", `顶层出现未知键 "${k}", 已拒绝: 拼写错误被静默忽略会让整份参数集失效而无人察觉`);
+  }
+  const p = isPlain(cfg.params) ? cfg.params : {};
+  if (cfg.params !== undefined && !isPlain(cfg.params)) E("V-01", "params 必须是对象");
+  for (const k of Object.keys(p)) {
+    if (!PARAM_KEYS.includes(k)) E("V-01", `params 出现未知键 "${k}", 已拒绝`);
+  }
+  // 必填元数据
+  if (!cfg.config_version) E("V-01", "config_version 缺失, 当前应为 \"1.0\"");
+  if (!cfg.id || !/^[a-z0-9][a-z0-9-]{2,39}$/.test(String(cfg.id))) {
+    E("V-01", `id=${cfg.id || "(缺失)"} 不合规: 须匹配 ^[a-z0-9][a-z0-9-]{2,39}$`);
+  }
+  if (!cfg.label) E("V-01", "label 缺失");
+  if (!cfg.as_of) E("V-01", "as_of 缺失(参数观测截止日)");
+
+  const FAM = Object.keys(ASSET_FAMILIES);
+  const STAGES = Object.keys(STAGE_FACTOR);
+  const DIMS = DIM_IDS;
+
+  // ---- V-02 / V-04 权重
+  if (blockDeclared(p.weights)) {
+    if (blockPartial(p.weights)) E("V-03", "weights 只填了一部分: 九维权重必须整块给出, 半填会让剩余维度静默沿用默认, 产生不可解释的权重");
+    let sum = 0;
+    for (const d of DIMS) {
+      const v = p.weights[d];
+      if (!hasVal(v)) { E("V-03", `weights 缺少 ${d}`); continue; }
+      const n = Number(v);
+      if (!isFinite(n)) { E("V-04", `weights.${d}=${v} 不是数值`); continue; }
+      if (n <= 0) E("V-04", `weights.${d}=${v} 不为正: 0 权重等于把该维度踢出评分, 请直接删维度而不是设 0`);
+      sum += n;
+    }
+    if (Math.abs(sum - 1) > 1e-9) {
+      if (opts.normalizeWeights) {
+        W("V-02", `weights 合计 ${sum.toFixed(6)} 不等于 1, 已按 --normalize-weights 归一化; 原始合计 ${sum.toFixed(6)}`);
+      } else {
+        E("V-02", `weights 合计 ${sum.toFixed(6)} 不等于 1: 不做自动归一, 因为那会让 0.31 / 0.09 这类录入错误静默通过; 确需归一请显式加 --normalize-weights`);
+      }
+    }
+  }
+
+  // ---- V-04 因子
+  for (const [key, label] of [["stage_factor", "stage_factor"], ["gate_factor", "gate_factor"]]) {
+    const blk = p[key];
+    if (!blockDeclared(blk)) continue;
+    for (const s of Object.keys(blk)) {
+      if (s === "_doc") continue;
+      if (!hasVal(blk[s])) continue;
+      const row = blk[s];
+      if (!isPlain(row)) { E("V-04", `${label}.${s} 必须是对象`); continue; }
+      for (const d of Object.keys(row)) {
+        if (d === "_doc") continue;
+        const v = Number(row[d]);
+        if (!isFinite(v)) E("V-04", `${label}.${s}.${d} 不是数值`);
+        else if (v <= 0) E("V-04", `${label}.${s}.${d}=${row[d]} 不为正`);
+      }
+    }
+    // ---- V-14 族/阶段名与覆盖完整性
+    if (key === "stage_factor") {
+      const given = Object.keys(blk).filter((k) => k !== "_doc" && hasVal(blk[k]));
+      for (const s of given) if (!STAGES.includes(s)) E("V-14", `stage_factor 出现未知阶段 "${s}"`);
+      if (given.length !== STAGES.length) {
+        E("V-14", `stage_factor 只覆盖了 ${given.length}/${STAGES.length} 个阶段: 未覆盖的阶段会与默认值静默混合, 造成新旧口径并存`);
+      }
+    } else {
+      const given = Object.keys(blk).filter((k) => k !== "_doc" && hasVal(blk[k]));
+      for (const f of given) if (!FAM.includes(f)) E("V-14", `gate_factor 出现未知资产族 "${f}"`);
+      const lack = FAM.filter((f) => !given.includes(f));
+      if (lack.length) E("V-14", `gate_factor 未覆盖: ${lack.join("、")}: 部分覆盖会让同一份报告里两族用不同口径`);
+    }
+  }
+
+  // ---- V-05 / V-06 / V-14 / V-10 收入倍数
+  if (blockDeclared(p.rev_mult)) {
+    const given = Object.keys(p.rev_mult).filter((k) => k !== "_doc" && hasVal(p.rev_mult[k]));
+    for (const f of given) if (!FAM.includes(f)) E("V-14", `rev_mult 出现未知资产族 "${f}"`);
+    const lack = FAM.filter((f) => !given.includes(f));
+    if (lack.length) E("V-14", `rev_mult 未覆盖: ${lack.join("、")}: 跨族比较是框架的主要用法, 单族覆盖会让比较失去一致性`);
+    for (const f of given) {
+      const buckets = p.rev_mult[f];
+      if (!Array.isArray(buckets) || !buckets.length) { E("V-05", `rev_mult.${f} 必须是非空数组`); continue; }
+      let prevTh = -Infinity;
+      let prevHi = Infinity;
+      for (const b of buckets) {
+        if (!Array.isArray(b) || b.length !== 2 || !Array.isArray(b[1]) || b[1].length !== 2) {
+          E("V-05", `rev_mult.${f} 的元素必须是 [[收入档, [下限, 上限]], ...]`);
+          continue;
+        }
+        const th = Number(b[0]);
+        const lo = Number(b[1][0]);
+        const hi = Number(b[1][1]);
+        if (!isFinite(th) || th < 0) E("V-05", `rev_mult.${f} 收入档 ${b[0]} 非法`);
+        if (!isFinite(lo) || !isFinite(hi)) { E("V-05", `rev_mult.${f} 区间含非数值`); continue; }
+        if (lo <= 0) E("V-05", `rev_mult.${f}[${th}] 下限 ${lo} 不为正`);
+        if (lo > hi) E("V-05", `rev_mult.${f}[${th}] 下限 ${lo} 大于上限 ${hi}`);
+        if (lo > 0 && hi / lo > 5) E("V-06", `rev_mult.${f}[${th}] 区间跨度 ${(hi / lo).toFixed(2)} 倍超过 5 倍: 跨度越大越接近「没给区间」, 请收窄或改口径`);
+        if (th <= prevTh) E("V-05", `rev_mult.${f} 收入档未递增: ${th} 出现在 ${prevTh} 之后`);
+        if (hi > prevHi) E("V-10", `rev_mult.${f}[${th}] 上限 ${hi} 高于更低收入档的上限 ${prevHi}: 收入越高区间应收窄, 这是方法的骨架`);
+        prevTh = th;
+        prevHi = hi;
+      }
+    }
+  }
+
+  // ---- V-07 / V-08 / V-09 里程碑耗时
+  if (blockDeclared(p.milestones) && isPlain(p.milestones)) {
+    for (const k of Object.keys(p.milestones)) {
+      if (!["months", "buffer", "_doc"].includes(k)) E("V-01", `params.milestones 出现未知键 "${k}"`);
+    }
+    const mm = p.milestones.months;
+    if (blockDeclared(mm)) {
+      if (!isPlain(mm.default)) E("V-14", "milestones.months 必须包含 default 族: 未覆盖的族按 default 回退");
+      for (const f of Object.keys(mm)) {
+        if (f === "_doc") continue;
+        if (!hasVal(mm[f])) continue;
+        if (f !== "default" && !FAM.includes(f)) E("V-14", `milestones.months 出现未知资产族 "${f}"`);
+        if (!isPlain(mm[f])) { E("V-07", `milestones.months.${f} 必须是对象`); continue; }
+        for (const lv of Object.keys(mm[f])) {
+          if (lv === "_doc") continue;
+          if (!MILESTONES.some((m) => m.id === lv)) { E("V-14", `milestones.months.${f} 出现未知级别 "${lv}"`); continue; }
+          const pair = mm[f][lv];
+          if (!Array.isArray(pair) || pair.length !== 2) { E("V-07", `milestones.months.${f}.${lv} 必须是 [下限, 上限]`); continue; }
+          const a = Number(pair[0]);
+          const b = Number(pair[1]);
+          if (!Number.isInteger(a) || !Number.isInteger(b) || a < 1 || b < 1) E("V-07", `milestones.months.${f}.${lv}=[${pair[0]},${pair[1]}] 必须是正整数月`);
+          if (a > b) E("V-05", `milestones.months.${f}.${lv} 下限 ${a} 大于上限 ${b}`);
+          if (b > 60) E("V-08", `milestones.months.${f}.${lv} 上限 ${b} 个月超过 60: 单级超过 5 年通常是单位填错(月/季)`);
+        }
+      }
+      // V-09 累计单调: 沿每条主干路径, 累计中值必须严格递增
+      const monthsOfIn = (fam, id) => {
+        const row = isPlain(mm[fam]) ? mm[fam] : {};
+        const def = isPlain(mm.default) ? mm.default : {};
+        const v = hasVal(row[id]) ? row[id] : def[id];
+        return Array.isArray(v) ? v : null;
+      };
+      for (const pk of Object.keys(MILESTONE_PATHS)) {
+        if (pk !== "default" && !FAM.includes(pk)) continue;
+        let cum = 0;
+        let prevCum = -1;
+        for (const id of MILESTONE_PATHS[pk]) {
+          const pair = monthsOfIn(pk, id);
+          if (!pair) continue;
+          cum += (Number(pair[0]) + Number(pair[1])) / 2;
+          if (cum <= prevCum) {
+            E("V-09", `路径 ${pk} 在 ${id} 处累计耗时未递增: 会产生「注册比临床快」的反物理排期`);
+          }
+          prevCum = cum;
+        }
+      }
+    }
+    const buf = p.milestones.buffer;
+    if (blockDeclared(buf)) {
+      for (const k of Object.keys(buf)) {
+        if (k === "_doc") continue;
+        if (!["L4", "L5", "default"].includes(k)) E("V-01", `params.milestones.buffer 出现未知键 "${k}"`);
+        const v = Number(buf[k]);
+        if (!isFinite(v) || v < 1 || v > 3) E("V-05", `milestones.buffer.${k}=${buf[k]} 非法: 缓冲系数应在 1 至 3 之间`);
+      }
+    }
+  }
+
+  // ---- V-11 概率
+  if (blockDeclared(p.prob)) {
+    const order = ["L1", "L2", "L3", "L4", "L5", "L6"];
+    let prev = Infinity;
+    for (const lv of order) {
+      const v = p.prob[lv];
+      if (!hasVal(v)) { E("V-11", `prob 缺少 ${lv}`); continue; }
+      const n = Number(v);
+      if (!isFinite(n) || n <= 0 || n >= 1) E("V-11", `prob.${lv}=${v} 必须在 0 与 1 之间(不含端点)`);
+      else if (n >= prev) E("V-11", `prob.${lv}=${v} 未严格低于上一级 ${prev}: 概率不递减会让期权法反算的隐含成功后价值失去意义`);
+      prev = isFinite(n) ? n : prev;
+    }
+    for (const k of Object.keys(p.prob)) {
+      if (k === "_doc") continue;
+      if (!order.includes(k)) E("V-01", `params.prob 出现未知键 "${k}"`);
+    }
+  }
+
+  // ---- V-12 置信折价
+  if (blockDeclared(p.confidence)) {
+    const hi = Number(p.confidence.high);
+    const md = Number(p.confidence.medium);
+    const lo = Number(p.confidence.low);
+    if (hi !== 1) E("V-12", `confidence.high=${p.confidence.high} 必须等于 1.0: 高于 1 等于给「自觉准」加分`);
+    if (!(lo > 0 && lo <= md && md <= hi)) E("V-12", `confidence 必须满足 0 < low <= medium <= high, 当前 ${lo} / ${md} / ${hi}`);
+  }
+
+  // ---- V-13 跑道档位
+  if (blockDeclared(p.runway) && isPlain(p.runway)) {
+    for (const k of Object.keys(p.runway)) {
+      if (!["rules", "floor_months", "_doc"].includes(k)) E("V-01", `params.runway 出现未知键 "${k}"`);
+    }
+    if (blockDeclared(p.runway.rules)) {
+      const rules = p.runway.rules;
+      if (!Array.isArray(rules) || rules.length !== 3) E("V-13", "runway.rules 必须是三档");
+      else {
+        const want = ["充足", "偏紧", "不足"];
+        let prev = Infinity;
+        rules.forEach((row, i) => {
+          const th = Number(Array.isArray(row) ? row[0] : NaN);
+          const label = Array.isArray(row) ? row[1] : "";
+          if (!isFinite(th)) E("V-13", `runway.rules[${i}] 阈值非数值`);
+          else if (th >= prev) E("V-13", `runway.rules[${i}] 阈值 ${th} 未严格递减`);
+          if (label !== want[i]) E("V-13", `runway.rules[${i}] 标签应为「${want[i]}」, 当前「${label}」: 档位标签是报告语言, 锁死才能让不同口径的报告互相引用`);
+          prev = isFinite(th) ? th : prev;
+        });
+      }
+    }
+    if (hasVal(p.runway.floor_months)) {
+      const v = Number(p.runway.floor_months);
+      if (!isFinite(v) || v < 3) E("V-04", `runway.floor_months=${p.runway.floor_months} 不得低于 3 个月`);
+    }
+  }
+
+  // ---- V-04 标量
+  if (hasVal(p.w_cap)) {
+    const v = Number(p.w_cap);
+    if (!isFinite(v) || v < 0.15 || v > 1) E("V-04", `w_cap=${p.w_cap} 非法: 应在 0.15 至 1 之间, 下限防单维绑架, 下限过低则失去约束意义`);
+  }
+  if (hasVal(p.deviation_threshold)) {
+    const v = Number(p.deviation_threshold);
+    if (!isFinite(v) || v <= 1) E("V-04", `deviation_threshold=${p.deviation_threshold} 非法: 必须大于 1`);
+  }
+
+  // ---- V-15 结论阈值
+  if (blockDeclared(p.verdict_thresholds)) {
+    const c = Number(p.verdict_thresholds.conditional);
+    const pa = Number(p.verdict_thresholds.pass);
+    const pf = Number(p.verdict_thresholds.preferred);
+    if (!(c > 0 && c < pa && pa < pf && pf <= 100)) {
+      E("V-15", `verdict_thresholds 必须满足 0 < conditional < pass < preferred <= 100, 当前 ${c} / ${pa} / ${pf}`);
+    }
+  }
+
+  // ---- 自定义警惕项
+  if (hasVal(p.rf_extensions)) {
+    if (!Array.isArray(p.rf_extensions)) E("V-01", "rf_extensions 必须是数组");
+    else {
+      p.rf_extensions.forEach((x, i) => {
+        if (!isPlain(x) || !/^RF-(4[5-9]|[5-9]\d)$/.test(String(x.id))) E("V-01", `rf_extensions[${i}] 的 id 必须是 RF-45 起的编号`);
+        if (x && x.severity !== "warn") E("V-01", `rf_extensions[${i}] 只允许 severity=warn: 允许新增一票否决会让红旗计数在不同客户间不可比, 也给「自定义否决以压价」留了口子`);
+        if (x && x.dim !== "EXT") E("V-01", `rf_extensions[${i}] 的 dim 必须是 "EXT"`);
+      });
+    }
+  }
+
+  // ---- V-16 / V-17 溯源(只统计本脚本消费的块, ownership.* 归另一个脚本)
+  const srcs = Array.isArray(cfg.sources) ? cfg.sources : [];
+  const refs = isPlain(cfg.param_sources) ? cfg.param_sources : {};
+  const allRefs = [...new Set(Object.entries(refs).filter(([k]) => !String(k).startsWith("ownership")).flatMap(([, v]) => (Array.isArray(v) ? v : [])).filter((x) => typeof x === "string"))];
+  const srcIds = new Set(srcs.map((s) => s && s.id));
+  for (const r of allRefs) {
+    if (!srcIds.has(r)) E("V-16", `param_sources 引用了不存在的来源 ${r}: 强制溯源, 不留后门`);
+  }
+  const levels = new Map(srcs.map((s) => [s && s.id, s && s.level]));
+  const prim = allRefs.filter((r) => ["一级", "二级"].includes(levels.get(r)));
+  const overridden = PARAM_KEYS.filter((k) => k !== "_doc" && k !== "ownership" && k !== "rf_extensions" && blockDeclared(p[k]));
+  if (overridden.length && !allRefs.length) {
+    W("V-19", `参数集覆盖了 ${overridden.length} 个块但未声明任何来源(param_sources 为空): 输出将标注「未溯源」`);
+  } else if (allRefs.length && !prim.length) {
+    E("V-17", `param_sources 全部为三级或更低来源: 生效中参数至少需要 1 条一级或二级来源, 三级只能作代理样本标注`);
+  }
+
+  // ---- V-18 失效
+  let stale = false;
+  if (cfg.expires_on) {
+    const exp = String(cfg.expires_on);
+    if (exp < today()) {
+      stale = true;
+      W("V-18", `参数集已于 ${exp} 过失效日: 输出将标注 STALE, 不阻断计算(回溯测试场景需要), 但结论时效性由使用方承担`);
+    }
+  } else {
+    W("V-18", "参数集未声明 expires_on: 无法判断时效性, 输出将标注 STALE");
+    stale = true;
+  }
+
+  const proxyCount = srcs.filter((s) => s && s.proxy === true && allRefs.includes(s.id)).length;
+  return { errors, warns, stale, proxyCount, sourceRefs: allRefs };
+}
+
+/** 把外部参数集与内置默认合并。返回的对象若与默认完全等价, 直接返回 DEFAULTS 本体。 */
+function resolveParams(cfg, opts = {}) {
+  if (!cfg) return DEFAULTS;
+  const p = isPlain(cfg.params) ? cfg.params : {};
+  const out = {
+    WEIGHTS: DEFAULTS.WEIGHTS,
+    STAGE_FACTOR: DEFAULTS.STAGE_FACTOR,
+    GATE_FACTOR: DEFAULTS.GATE_FACTOR,
+    REV_MULT: DEFAULTS.REV_MULT,
+    MILESTONE_MONTHS: DEFAULTS.MILESTONE_MONTHS,
+    MILESTONE_BUFFER: DEFAULTS.MILESTONE_BUFFER,
+    PROB_BY_MILESTONE: DEFAULTS.PROB_BY_MILESTONE,
+    CONF_DISCOUNT: DEFAULTS.CONF_DISCOUNT,
+    W_CAP: DEFAULTS.W_CAP,
+    RUNWAY_RULES: DEFAULTS.RUNWAY_RULES,
+    RUNWAY_FLOOR_MONTHS: DEFAULTS.RUNWAY_FLOOR_MONTHS,
+    DEVIATION_FLAG: DEFAULTS.DEVIATION_FLAG,
+    VERDICT_THRESHOLDS: DEFAULTS.VERDICT_THRESHOLDS,
+  };
+  const ov = [];
+  const pick = (blk) => Object.fromEntries(Object.entries(blk).filter(([k, v]) => k !== "_doc" && hasVal(v)));
+
+  if (blockDeclared(p.weights)) {
+    let w = pick(p.weights);
+    if (opts.normalizeWeights) {
+      const sum = Object.values(w).reduce((a, v) => a + Number(v), 0);
+      if (sum > 0) w = Object.fromEntries(Object.entries(w).map(([k, v]) => [k, Number(v) / sum]));
+    }
+    out.WEIGHTS = w;
+    ov.push("weights");
+  }
+  if (blockDeclared(p.stage_factor)) {
+    const s = {};
+    for (const st of Object.keys(STAGE_FACTOR)) s[st] = pick(p.stage_factor[st] || {});
+    out.STAGE_FACTOR = s;
+    ov.push("stage_factor");
+  }
+  if (blockDeclared(p.gate_factor)) {
+    const g = {};
+    for (const f of Object.keys(ASSET_FAMILIES)) g[f] = pick(p.gate_factor[f] || {});
+    out.GATE_FACTOR = g;
+    ov.push("gate_factor");
+  }
+  if (blockDeclared(p.rev_mult)) {
+    const r = {};
+    for (const f of Object.keys(p.rev_mult)) {
+      if (f === "_doc" || !hasVal(p.rev_mult[f])) continue;
+      r[f] = p.rev_mult[f].map((b) => [Number(b[0]), [Number(b[1][0]), Number(b[1][1])]]);
+    }
+    out.REV_MULT = r;
+    ov.push("rev_mult");
+  }
+  if (blockDeclared(p.milestones) && isPlain(p.milestones)) {
+    if (blockDeclared(p.milestones.months)) {
+      const mm = { ...MILESTONE_MONTHS };
+      for (const f of Object.keys(p.milestones.months)) {
+        if (f === "_doc" || !hasVal(p.milestones.months[f])) continue;
+        const row = {};
+        for (const lv of Object.keys(p.milestones.months[f])) {
+          if (lv === "_doc") continue;
+          const pair = p.milestones.months[f][lv];
+          if (Array.isArray(pair)) row[lv] = [Number(pair[0]), Number(pair[1])];
+        }
+        mm[f] = { ...(mm[f] || {}), ...row };
+      }
+      out.MILESTONE_MONTHS = mm;
+      ov.push("milestones_months");
+    }
+    if (blockDeclared(p.milestones.buffer)) {
+      out.MILESTONE_BUFFER = { ...MILESTONE_BUFFER, ...pick(p.milestones.buffer) };
+      ov.push("milestones_buffer");
+    }
+  }
+  if (blockDeclared(p.prob)) {
+    out.PROB_BY_MILESTONE = Object.fromEntries(Object.entries(pick(p.prob)).map(([k, v]) => [k, Number(v)]));
+    ov.push("prob");
+  }
+  if (blockDeclared(p.confidence)) {
+    out.CONF_DISCOUNT = Object.fromEntries(Object.entries(pick(p.confidence)).map(([k, v]) => [k, Number(v)]));
+    ov.push("confidence");
+  }
+  if (blockDeclared(p.runway) && isPlain(p.runway)) {
+    if (blockDeclared(p.runway.rules)) {
+      out.RUNWAY_RULES = p.runway.rules.map((r) => [Number(r[0]), String(r[1]), String(r[2] || "")]);
+      ov.push("runway_rules");
+    }
+    if (hasVal(p.runway.floor_months)) {
+      out.RUNWAY_FLOOR_MONTHS = Number(p.runway.floor_months);
+      ov.push("runway_floor");
+    }
+  }
+  if (hasVal(p.w_cap)) { out.W_CAP = Number(p.w_cap); ov.push("w_cap"); }
+  if (hasVal(p.deviation_threshold)) { out.DEVIATION_FLAG = Number(p.deviation_threshold); ov.push("deviation_threshold"); }
+  if (blockDeclared(p.verdict_thresholds)) {
+    out.VERDICT_THRESHOLDS = Object.fromEntries(Object.entries(pick(p.verdict_thresholds)).map(([k, v]) => [k, Number(v)]));
+    ov.push("verdict_thresholds");
+  }
+
+  // 值与默认等价时回到 DEFAULTS 本体: 保证「等价输入产出逐字相同的输出」
+  const same = Object.keys(DEFAULTS).every((k) => deepEqual(out[k], DEFAULTS[k]));
+  if (same) return DEFAULTS;
+
+  const v = validateConfig(cfg, opts);
+  out.__meta = {
+    id: String(cfg.id || "unnamed"),
+    hash8: opts.hash8 || "00000000",
+    label: String(cfg.label || ""),
+    overrides: ov,
+    asOf: cfg.as_of || "",
+    effectiveFrom: cfg.effective_from || "",
+    expiresOn: cfg.expires_on || "",
+    stale: v.stale,
+    proxyCount: v.proxyCount,
+    sourceRefs: v.sourceRefs,
+    untraced: !v.sourceRefs.length,
+    warns: v.warns,
+    checks: v.warns.length ? `通过(V-01..V-19, 含 ${v.warns.length} 条提示)` : "通过(V-01..V-19)",
+  };
+  return out;
+}
+
+/** schema 兼容判定: 主版本相同且次版本不高于脚本, 视为可解析
+ *  (新增可选字段属兼容变更, 不应让旧输入的每一份报告都跳告警) */
+function schemaCompatible(v) {
+  const a = String(v).split(".").map((x) => Number(x));
+  const b = SCHEMA_VERSION.split(".").map((x) => Number(x));
+  if (!isFinite(a[0]) || !isFinite(a[1] === undefined ? 0 : a[1])) return false;
+  const aMinor = a[1] === undefined ? 0 : a[1];
+  return a[0] === b[0] && aMinor <= b[1];
+}
+
+/** 把内置默认参数导出为一份合法 config, 供 --print-defaults 使用 */
+function defaultsAsConfig() {
+  return {
+    config_version: "1.0",
+    id: "builtin-default",
+    label: "内置默认参数",
+    as_of: today(),
+    effective_from: today(),
+    expires_on: "9999-12-31",
+    basis: { upstream_version: VERSION, builtin: true },
+    params: {
+      weights: { ...DEFAULTS.WEIGHTS },
+      stage_factor: DEFAULTS.STAGE_FACTOR,
+      gate_factor: DEFAULTS.GATE_FACTOR,
+      rev_mult: DEFAULTS.REV_MULT,
+      milestones: { months: DEFAULTS.MILESTONE_MONTHS, buffer: DEFAULTS.MILESTONE_BUFFER },
+      prob: DEFAULTS.PROB_BY_MILESTONE,
+      confidence: DEFAULTS.CONF_DISCOUNT,
+      runway: { rules: DEFAULTS.RUNWAY_RULES, floor_months: DEFAULTS.RUNWAY_FLOOR_MONTHS },
+      w_cap: DEFAULTS.W_CAP,
+      deviation_threshold: DEFAULTS.DEVIATION_FLAG,
+      verdict_thresholds: DEFAULTS.VERDICT_THRESHOLDS,
+    },
+    sources: [],
+    param_sources: {},
+  };
+}
+
+/** 覆盖项 → 显示串 */
+function describeOverrides(list) {
+  return list.map((k) => {
+    const m = BLOCK_LABELS[k];
+    return m ? `${m[0]}(${m[1]})` : k;
+  }).join(", ");
+}
+
+// ============================================================
 // 计算
 // ============================================================
 
-function analyze(d) {
+function analyze(d, P = DEFAULTS, extra = []) {
   const warnings = [];
   const w = (msg) => warnings.push(msg);
+  if (P.__meta && Array.isArray(P.__meta.warns)) P.__meta.warns.forEach((x) => w(x));
+  extra.forEach((x) => w(x));
 
   // ---- 0. 输入归一
   const meta = d.meta || {};
@@ -480,17 +1092,17 @@ function analyze(d) {
   const exit = d.exit || {};
 
   if (!meta.as_of) w("meta.as_of 缺失, 已按运行日作为数据截止日");
-  if (meta.schema_version && meta.schema_version !== SCHEMA_VERSION) {
-    w(`输入 schema_version=${meta.schema_version} 与脚本 ${SCHEMA_VERSION} 不一致, 未识别字段将被忽略`);
+  if (meta.schema_version && !schemaCompatible(meta.schema_version)) {
+    w(`输入 schema_version=${meta.schema_version} 与脚本 ${SCHEMA_VERSION} 不兼容(主版本不同或次版本更高), 未识别字段将被忽略`);
   }
   if (meta.currency && meta.currency !== "CNY") {
     w(`meta.currency=${meta.currency} 暂不支持换算, 金额一律按原值处理, 跨币种结论不可比`);
   }
   if (!company.name) w("company.name 缺失, 输出以「未命名主体」占位");
-  if (!company.stage || !STAGE_FACTOR[company.stage]) {
+  if (!company.stage || !P.STAGE_FACTOR[company.stage]) {
     w(`company.stage=${company.stage || "缺失"} 不在取值域内, 权重按 a 轮处理`);
   }
-  const stage = STAGE_FACTOR[company.stage] ? company.stage : "a";
+  const stage = P.STAGE_FACTOR[company.stage] ? company.stage : "a";
 
   // ---- 1. 资产属性门禁
   let familyKey = asset.class;
@@ -562,11 +1174,23 @@ function analyze(d) {
     w(`证据链断档: ${skipped.map((id) => `${id} 已达成但 ${path[path.indexOf(id) - 1]} 未达成`).join("; ")}`);
   }
 
+  // 里程碑耗时按族取: 二类康复的 L3 与植入式的 L3 不是一个东西, 故不支持全局一刀切
+  const monthsOf = (id) => {
+    const bf = P.MILESTONE_MONTHS || {};
+    const fam = isPlain(bf[familyKey]) ? bf[familyKey] : {};
+    const def = isPlain(bf.default) ? bf.default : {};
+    const v = hasVal(fam[id]) ? fam[id] : def[id];
+    if (Array.isArray(v) && v.length === 2) return v;
+    const m = MILESTONES.find((x) => x.id === id);
+    return m ? m.months : null;
+  };
+
   const nextMeta = nextId ? MILESTONES.find((m) => m.id === nextId) : null;
-  const nextBuf = MILESTONE_BUFFER[nextId] || MILESTONE_BUFFER.default;
-  const needLo = nextMeta ? nextMeta.months[0] * nextBuf : null;
-  const needHi = nextMeta ? nextMeta.months[1] * nextBuf : null;
-  const needMid = nextMeta ? mid(nextMeta.months) * nextBuf : null;
+  const nextMonths = nextId ? monthsOf(nextId) : null;
+  const nextBuf = P.MILESTONE_BUFFER[nextId] || P.MILESTONE_BUFFER.default;
+  const needLo = nextMonths ? nextMonths[0] * nextBuf : null;
+  const needHi = nextMonths ? nextMonths[1] * nextBuf : null;
+  const needMid = nextMonths ? mid(nextMonths) * nextBuf : null;
 
   const providedSet = new Set(nextId && byId.get(nextId) ? (byId.get(nextId).provided || []) : []);
   const missingEvidence = nextMeta ? nextMeta.evidence.filter((e) => !providedSet.has(e.key)) : [];
@@ -592,14 +1216,14 @@ function analyze(d) {
 
   const rawW = {};
   for (const id of DIM_IDS) {
-    const sf = (STAGE_FACTOR[stage] || {})[id] || 1;
-    const gf = (GATE_FACTOR[familyKey] || {})[id] || 1;
-    rawW[id] = WEIGHTS[id] * sf * gf;
+    const sf = (P.STAGE_FACTOR[stage] || {})[id] || 1;
+    const gf = (P.GATE_FACTOR[familyKey] || {})[id] || 1;
+    rawW[id] = P.WEIGHTS[id] * sf * gf;
   }
   let sumW = DIM_IDS.reduce((a, id) => a + rawW[id], 0);
   DIM_IDS.forEach((id) => { rawW[id] = rawW[id] / sumW; });
   let capped = false;
-  DIM_IDS.forEach((id) => { if (rawW[id] > W_CAP) { rawW[id] = W_CAP; capped = true; } });
+  DIM_IDS.forEach((id) => { if (rawW[id] > P.W_CAP) { rawW[id] = P.W_CAP; capped = true; } });
   if (capped) {
     sumW = DIM_IDS.reduce((a, id) => a + rawW[id], 0);
     DIM_IDS.forEach((id) => { rawW[id] = rawW[id] / sumW; });
@@ -619,8 +1243,8 @@ function analyze(d) {
       w(`维度 ${id} 的 score=${score} 越界, 已截断至 0-100`);
       score = clamp(score, 0, 100);
     }
-    const conf = CONF_DISCOUNT[dim.confidence] !== undefined ? dim.confidence : "medium";
-    if (dim.confidence && CONF_DISCOUNT[dim.confidence] === undefined) {
+    const conf = P.CONF_DISCOUNT[dim.confidence] !== undefined ? dim.confidence : "medium";
+    if (dim.confidence && P.CONF_DISCOUNT[dim.confidence] === undefined) {
       w(`维度 ${id} 的 confidence=${dim.confidence} 不在取值域内, 按 medium 处理`);
     }
     const evList = Array.isArray(dim.evidence) ? dim.evidence : [];
@@ -628,7 +1252,7 @@ function analyze(d) {
       if (!e || !e.source) w(`维度 ${id} 第 ${i + 1} 条证据缺 source: 该条不可追溯`);
       if (!e || !e.date) w(`维度 ${id} 第 ${i + 1} 条证据缺 date: 该条未标注时点, 与当前结论的可比性下降`);
     });
-    const eff = score * CONF_DISCOUNT[conf];
+    const eff = score * P.CONF_DISCOUNT[conf];
     const contrib = finalW[id] * eff;
     total += contrib;
     rows.push({ id, score, conf, eff, weight: finalW[id], contrib, open: (dim.checks_open || []), notes: dim.notes || "" });
@@ -662,14 +1286,14 @@ function analyze(d) {
   const ratio = runway !== null && needMid ? runway / needMid : null;
   let runwayTier = null;
   if (ratio !== null) {
-    for (const [th, label, desc] of RUNWAY_RULES) {
+    for (const [th, label, desc] of P.RUNWAY_RULES) {
       if (ratio >= th) { runwayTier = { th, label, desc }; break; }
     }
   }
   if (cash !== null && cash < 0) w("financials.cash 为负: 现金及等价物不应为负数, 请核对科目口径");
   if (burn === null && cash !== null) w("financials.burn_monthly 缺失或非正数: 无法计算现金跑道");
-  if (runway !== null && runway < RUNWAY_FLOOR_MONTHS) {
-    w(`现金跑道 ${num(runway, 1)} 个月低于 ${RUNWAY_FLOOR_MONTHS} 个月红线(只计现金与未使用授信, 未含应付账款展期)`);
+  if (runway !== null && runway < P.RUNWAY_FLOOR_MONTHS) {
+    w(`现金跑道 ${num(runway, 1)} 个月低于 ${P.RUNWAY_FLOOR_MONTHS} 个月红线(只计现金与未使用授信, 未含应付账款展期)`);
   }
 
   const rev = Number.isFinite(Number(fin.revenue_ttm)) ? Number(fin.revenue_ttm) : null;
@@ -694,8 +1318,8 @@ function analyze(d) {
   const impliedPS = rev !== null && rev > 0 && post !== null ? post / rev : null;
   let band = null;
   let bandLabel = "";
-  if (REV_MULT[familyKey]) {
-    const buckets = REV_MULT[familyKey];
+  if (P.REV_MULT[familyKey]) {
+    const buckets = P.REV_MULT[familyKey];
     const r = rev === null ? 0 : rev;
     for (let i = 0; i < buckets.length; i += 1) {
       if (r >= buckets[i][0]) {
@@ -705,12 +1329,12 @@ function analyze(d) {
     }
   }
   const deviation = impliedPS !== null && band ? impliedPS / band[1] : null;
-  const isMismatch = deviation !== null && deviation > DEVIATION_FLAG && !family.allow_option;
+  const isMismatch = deviation !== null && deviation > P.DEVIATION_FLAG && !family.allow_option;
 
   // 申报口径下的对照区间: 降级情形下用于说明「按申报口径衡量需要被解释多少」
   let declaredBand = null;
-  if (REV_MULT[declaredClass]) {
-    const buckets = REV_MULT[declaredClass];
+  if (P.REV_MULT[declaredClass]) {
+    const buckets = P.REV_MULT[declaredClass];
     const rr = rev === null ? 0 : rev;
     for (let i = 0; i < buckets.length; i += 1) {
       if (rr >= buckets[i][0]) declaredBand = buckets[i][1];
@@ -722,11 +1346,12 @@ function analyze(d) {
     w(`估值口径错配: 按当前判定口径「${family.label}」衡量, 隐含 P/S ${num(impliedPS, 1)} 为区间上沿(${band[1]})的 ${num(deviation, 1)} 倍, 且该资产类别不适用期权法`);
   }
 
-  const probNext = nextId ? PROB_BY_MILESTONE[nextId] : null;
+  const probNext = nextId ? P.PROB_BY_MILESTONE[nextId] : null;
   const impliedSuccessValue = probNext && post !== null ? post / probNext : null;
 
   // ---- 7. 结论分级
-  let grade = total >= 85 ? "preferred" : total >= 70 ? "pass" : total >= 55 ? "conditional" : "watch";
+  const VT = P.VERDICT_THRESHOLDS;
+  let grade = total >= VT.preferred ? "preferred" : total >= VT.pass ? "pass" : total >= VT.conditional ? "conditional" : "watch";
   const capReasons = [];
 
   // 证据覆盖不足时不输出分级: 零证据下的任何结论都会误导
@@ -787,6 +1412,7 @@ function analyze(d) {
     declaredBand, declaredDeviation,
     probNext, impliedSuccessValue,
     grade, verdict, capReasons, gaps, warnings,
+    paramsMeta: P.__meta || null,
   };
 }
 
@@ -794,7 +1420,7 @@ function analyze(d) {
 // 渲染
 // ============================================================
 
-function render(r) {
+function render(r, P = DEFAULTS) {
   const L = [];
   const p = (s = "") => L.push(s);
   let secNo = 0;
@@ -806,7 +1432,7 @@ function render(r) {
 
   const bar = "=".repeat(56);
   p(bar);
-  p(`BCI INVESTMENT DD SCORECARD  v${VERSION}`);
+  p(r.paramsMeta ? `BCI INVESTMENT DD SCORECARD  v${VERSION}  |  params: ${r.paramsMeta.id}@${r.paramsMeta.hash8}` : `BCI INVESTMENT DD SCORECARD  v${VERSION}`);
   p(bar);
   p("");
 
@@ -818,6 +1444,20 @@ function render(r) {
   p(`- 数据截止: ${r.meta.as_of || new Date().toISOString().slice(0, 10)} | 币种: ${r.meta.currency || "CNY"} | 分析: ${r.meta.analyst || "-"}`);
   p(`- 维度完成度: ${dimCount}/9 | 里程碑状态已填: ${r.items.length}/7 | 红旗登记 ${r.rfTouched} 条`);
   p("");
+
+  // ---- 参数口径与溯源
+  // 刻意用 H3 且不调 sec(): 13 个编号 H2 与 assets/templates/report-template.md
+  // 逐字互锁, 新增编号 H2 会让「一、」变「二、」并打断 CI 断言。
+  if (r.paramsMeta) {
+    const m = r.paramsMeta;
+    p("### 参数口径与溯源");
+    p(`- 参数集: ${m.id} | 基线: 内置默认 v${VERSION} | 校验: ${m.checks}`);
+    p(`- 覆盖范围: ${describeOverrides(m.overrides) || "无"} | 其余沿用默认`);
+    p(`- 参数来源: ${m.sourceRefs.length ? m.sourceRefs.join(", ") : "未声明"} | 未溯源项: ${m.untraced ? m.overrides.length : 0} | 代理样本项: ${m.proxyCount}`);
+    p(`- 生效日: ${m.effectiveFrom || "-"} | 失效日: ${m.expiresOn || "-"} | 状态: ${m.stale ? "STALE" : "生效中"}`);
+    p("> 本节说明本次计算所用的方法学参数来源与版本。参数为方法学假设, 不构成对任何标的的估值结论。");
+    p("");
+  }
 
   // ---- 一、资产属性门禁
   p(sec("资产属性门禁"));
@@ -862,7 +1502,7 @@ function render(r) {
 
   // ---- 三、九维加权评分
   p(sec("九维加权评分"));
-  p(`> 有效分 = 原分 × 置信折价(high 1.00 / medium 0.90 / low 0.75); 权重已按阶段因子与门禁因子修正并归一化, 单维上限 ${W_CAP}。`);
+  p(`> 有效分 = 原分 × 置信折价(high ${P.CONF_DISCOUNT.high.toFixed(2)} / medium ${P.CONF_DISCOUNT.medium.toFixed(2)} / low ${P.CONF_DISCOUNT.low.toFixed(2)}); 权重已按阶段因子与门禁因子修正并归一化, 单维上限 ${P.W_CAP}。`);
   p("");
   p("| 维度 | 名称 | 原分 | 置信 | 折价后 | 有效权重 | 加权贡献 | 未完成检查项 |");
   p("|---|---|---|---|---|---|---|---|");
@@ -926,7 +1566,7 @@ function render(r) {
       if (r.declaredDeviation !== null && r.declaredClass !== r.familyKey) {
         p(`- 对照申报口径「${r.declaredClass}」的区间上沿 ${r.declaredBand ? r.declaredBand[1] : "-"}, 隐含倍数为 ${num(r.declaredDeviation, 2)} 倍; 该溢价需由明确的临床里程碑跳升来解释, 且必须先解决闭环与分类判定问题。`);
       }
-    } else if (r.deviation !== null && r.deviation > DEVIATION_FLAG && r.family.allow_option) {
+    } else if (r.deviation !== null && r.deviation > P.DEVIATION_FLAG && r.family.allow_option) {
       p(`- 溢价部分需由里程碑跳升解释: 当前隐含倍数为区间上沿的 ${num(r.deviation, 1)} 倍。`);
       if (r.probNext && r.impliedSuccessValue !== null) {
         p(`- 若下一里程碑(${r.nextId})达成概率按占位值 ${num(r.probNext, 2)} 折算, 当前定价对应的隐含成功后价值为 ${money(r.impliedSuccessValue)}, 请核该值是否落在同档可比区间。`);
@@ -950,7 +1590,7 @@ function render(r) {
   p("");
   p(`> ${r.verdict.desc}`);
   p("");
-  p(`- 有效加权分 **${num(r.total, 1)}**(满分 100), 对应分级阈值 55 / 70 / 85。`);
+  p(`- 有效加权分 **${num(r.total, 1)}**(满分 100), 对应分级阈值 ${P.VERDICT_THRESHOLDS.conditional} / ${P.VERDICT_THRESHOLDS.pass} / ${P.VERDICT_THRESHOLDS.preferred}。`);
   p(`- 里程碑当前为 **${r.currentId || "尚未启动"}**${r.nextId ? `, 下一级 ${r.nextId} 需时约 ${num(r.needMid, 1)} 个月` : ""}${r.runway !== null ? `; 跑道 ${num(r.runway, 1)} 个月, 档位「${r.runwayTier ? r.runwayTier.label : "-"}」` : ""}。`);
   p(`- 未闭合致命项 ${r.vetoOpen.length + r.fatalOpen.length} 条, 状态不明 ${r.vetoUnknown.length} 条; 警惕项未闭合 ${r.warnOpen.length} 条。`);
   if (r.capReasons.length) {
@@ -992,13 +1632,91 @@ function render(r) {
 // main
 // ============================================================
 
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes("--example")) {
-  process.stdout.write(render(analyze(EXAMPLE_OBJ)));
+const argv = process.argv.slice(2);
+const KNOWN_FLAGS = ["--example", "--print-defaults", "--normalize-weights"];
+
+let configPath = null;
+const rest = [];
+for (let i = 0; i < argv.length; i += 1) {
+  const a = argv[i];
+  if (a === "--config") {
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      console.error("--config 需要一个文件路径");
+      process.exit(2);
+    }
+    configPath = next;
+    i += 1;
+    continue;
+  }
+  if (a.startsWith("--config=")) {
+    configPath = a.slice("--config=".length);
+    continue;
+  }
+  rest.push(a);
+}
+
+const unknown = rest.find((a) => a.startsWith("--") && !KNOWN_FLAGS.includes(a));
+if (unknown) {
+  console.error(`未知参数 ${unknown}; 可用: ${KNOWN_FLAGS.join(" ")} --config <file>`);
+  process.exit(2);
+}
+const wantExample = rest.includes("--example");
+const wantPrint = rest.includes("--print-defaults");
+const normalizeWeights = rest.includes("--normalize-weights");
+const positional = rest.filter((a) => !a.startsWith("--"));
+
+if (wantPrint) {
+  if (configPath) {
+    console.error("--print-defaults 与 --config 互斥: 前者输出内置默认参数, 后者加载外部参数集");
+    process.exit(2);
+  }
+  process.stdout.write(JSON.stringify(defaultsAsConfig(), null, 2) + "\n");
+  process.exit(0);
+}
+if (wantExample && configPath) {
+  console.error("--example 与 --config 互斥: 内置示例是三份 CI 回归基线之一, 不接受口径覆盖");
+  process.exit(2);
+}
+if (positional.length > 1) {
+  console.error(`只接受一个输入文件, 收到 ${positional.length} 个: ${positional.join(", ")}`);
+  process.exit(2);
+}
+
+// ---- 加载参数集: 非法即中止, 不做「部分可用」
+let cfg = null;
+let hash8 = null;
+if (configPath) {
+  let raw;
+  try {
+    raw = readFileSync(configPath, "utf8");
+  } catch (e) {
+    console.error(`读取参数集失败: ${e.message}`);
+    process.exit(2);
+  }
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    console.error(`参数集解析失败: ${e.message}`);
+    process.exit(2);
+  }
+  const v = validateConfig(cfg, { normalizeWeights });
+  if (v.errors.length) {
+    console.error("参数集校验未通过, 已中止(参数错了, 算出来的每个数都是错的):");
+    for (const x of v.errors) console.error(`  - ${x}`);
+    process.exit(2);
+  }
+  hash8 = createHash("sha256").update(raw).digest("hex").slice(0, 8);
+}
+const P = resolveParams(cfg, { normalizeWeights, hash8 });
+
+// ---- 无输入文件时以内置示例演示参数效果(便于快速看口径差异)
+if (!positional.length) {
+  process.stdout.write(render(analyze(EXAMPLE_OBJ, P), P));
   process.exit(0);
 }
 
-const file = args.find((a) => a !== "--example");
+const file = positional[0];
 let data;
 try {
   data = JSON.parse(readFileSync(file, "utf8"));
@@ -1014,4 +1732,15 @@ if (!data.meta || !data.meta.as_of) {
   console.error("缺少 meta.as_of(数据截止日, YYYY-MM-DD)");
   process.exit(1);
 }
-process.stdout.write(render(analyze(data)));
+
+// ---- 复算基线校验: 输入声明的参数集与实际加载的不一致, 说明报告无法被同一口径复现
+const extra = [];
+if (data.meta.params_ref) {
+  const actual = P.__meta ? `${P.__meta.id}@${P.__meta.hash8}` : null;
+  if (!actual) {
+    extra.push(`输入声明 meta.params_ref=${data.meta.params_ref}, 但本次未加载参数集(--config): 该输入的结论不可按声明口径复算`);
+  } else if (actual !== data.meta.params_ref) {
+    extra.push(`输入声明 meta.params_ref=${data.meta.params_ref}, 实际加载 ${actual}: 复算基线已失效`);
+  }
+}
+process.stdout.write(render(analyze(data, P, extra), P));

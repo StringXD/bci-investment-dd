@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#工程约定)
-[![Version](https://img.shields.io/badge/version-0.1.0-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-informational.svg)](CHANGELOG.md)
 
 ---
 
@@ -73,6 +73,28 @@ node scripts/ownership.mjs examples/03-cap-table.json
 
 输出是 Markdown, 可直接粘进尽调报告。第一至七节的表格与数字**逐字粘贴**, 报告模板的节号与脚本节号一一对应。
 
+### 换口径: 用参数集, 不改源码
+
+内置权重与倍数区间是结构示意值, 本来就该按自己基金的偏好校准。校准结果放在一份**独立**的参数集文件里, 用 `--config` 传入:
+
+```bash
+# 以内置默认值为起点, 导出成可编辑的参数集
+node scripts/dd_score.mjs --print-defaults > fund-2026q4.json
+
+# 改完再跑; 覆盖生效时 banner 会标注参数集指纹
+node scripts/dd_score.mjs data.json --config fund-2026q4.json
+```
+
+为什么不把参数写进标的输入: 参数按季度失效, 标的输入按项目失效; 混在一个文件里, 「转发给同事做复核」就变成了「顺手泄露机构权重」, 而且报告无法区分「参数变了」还是「标的数据变了」。
+
+参数集不合法时脚本以 `exit 2` 中止并逐条列出 `V-01` 至 `V-19` 的编号 —— **参数错了, 算出来的每个数都是错的, 不存在「部分可用」**。空参数集与默认值往返的等价性, 以及三份示例的可复现性, 由 `bash tests/run.sh` 守护:
+
+```bash
+bash tests/run.sh    # 22 项断言
+```
+
+有一类参数锁死不可覆盖: 红旗的编号与等级、`allow_option`、门禁判定逻辑、里程碑主干路径、监管编码。允许改红旗等级等于允许把一票否决降级 —— 这是框架唯一不开的口子。
+
 ## 目录结构
 
 ```
@@ -94,6 +116,9 @@ bci-investment-dd/
 ├── assets/
 │   ├── schema/                   # 两份输入 JSON Schema
 │   └── templates/                # 报告模板 + 资料索取函模板
+├── tests/
+│   ├── run.sh                    # 回归断言: 输出可复现 + 参数集纪律
+│   └── fixtures/                 # 等价性与负向参数集夹具
 ├── examples/                     # 三组脱敏示例与脚本真实输出
 └── CHANGELOG.md
 ```
@@ -123,8 +148,9 @@ bci-investment-dd/
 - **零依赖。** 只用 Node 标准库, 不联网, 不写文件, 输出到 stdout。
 - **能算多少算多少。** 输入缺失只产出 `## 警告`, 不抛异常: 问题集中到最后一段, 每条带主体名与具体数值。
 - **节号是契约。** 脚本输出 `## 一` 至 `## 七` 与末段 `## 警告`, 报告模板按同一套节号组织, 三方对齐。
-- **参数可校准。** 权重、阶段因子、倍数区间、里程碑耗时都是常量表, 属方法学假设而非市场事实。换口径就改常量表, 并在报告里声明版本。
+- **参数可校准。** 权重、阶段因子、倍数区间、里程碑耗时都是常量表, 属方法学假设而非市场事实。换口径用 `--config` 传独立参数集, 并在报告里声明版本与指纹。
 - **不口算。** 所有数字以脚本 stdout 为准, 禁止四舍五入改写或在报告里补算脚本没输出的指标。
+- **可复算。** 同一份输入 + 同一份参数集, 任何时候跑出同一份报告; 覆盖生效时输出带 `params: <id>@<hash8>`, 把它填回 `meta.params_ref` 即可闭环。
 
 ## 方法论溯源
 
@@ -152,6 +178,7 @@ bci-investment-dd/
 - 控制权推演为按稀释比例线性折算的近似, 不替代律师的章程逐条核对。
 - 涉及监管要求时, 一律以现行有效的法规、指导原则与审评要求原文为准。
 - 示例数据全部虚构, 不得作为可比交易或估值参照。
+- **本项目未授权任何第三方作为官方发行方。** MIT 许可允许任何人复制、修改与再分发本仓库(含商业转售), 这是许可本身的含义, 无法也不会被收回; 但第三方发行不构成作者背书, 修改版也不代表本框架的方法学。如需确认来源, 请比对 `CHANGELOG.md` 与提交历史, 或运行脚本后核对 banner 中的版本号。
 
 ## 贡献
 

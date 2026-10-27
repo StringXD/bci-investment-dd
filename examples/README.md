@@ -17,7 +17,17 @@ node scripts/dd_score.mjs examples/02-consumer-eeg.json    > examples/02-output.
 node scripts/ownership.mjs examples/03-cap-table.json      > examples/03-output.md
 ```
 
-输出只依赖输入与脚本版本, 不含时间戳外的随机因素。若重新生成后与仓库内文件不一致, 说明脚本或输入有改动, 请在 PR 中一并更新。
+输出只依赖输入与脚本版本, 不含时间戳外的随机因素。若重新生成后与仓库内文件不一致, 说明脚本或输入有改动, 请在 PR 中一并更新。`bash tests/run.sh` 会逐字比对这三份文件, CI 亦同。
+
+## 参数集示例
+
+本目录的三份输出都用**内置默认参数**生成 —— 也就是说, 它们演示的是方法与结构, 不是任何一家机构的真实口径。要看参数集注入的效果, 用 `tests/fixtures/config-override.json`(夹具, 数值全部虚构):
+
+```bash
+node scripts/dd_score.mjs examples/01-implant-class3.json --config tests/fixtures/config-override.json
+```
+
+覆盖生效后, banner 会多出一段 `| params: fixture-override@<hash8>`, 「输入概要」后也会多一段 `### 参数口径与溯源`。这两处出现与否, 是判断「这一份报告到底用了哪套尺子」的唯一依据。
 
 ## 怎么读
 

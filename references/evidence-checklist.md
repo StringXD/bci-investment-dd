@@ -1,7 +1,7 @@
 # 证据清单(按维度)
 
 > 阶段门禁: `SKILL.md` 阶段 3 加载任一维度时同时读本文件对应行
-> 与脚本契约: 交付函模板见 `assets/templates/evidence-request-list.md`; 证据缺 source 或 date 时脚本会告警
+> 与脚本契约: 交付函模板见 `assets/templates/evidence-request-letter.md`; 证据缺 source 或 date 时脚本会告警
 
 ## 三列的含义
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * bci-ownership v0.1.0 — 脑机接口企业股权与控制权穿透
+ * bci-ownership v0.2.0 — 脑机接口企业股权与控制权穿透
  * 仅用 Node 标准库, 无第三方依赖 (node >= 18)。
  *
  * 与通用股权穿透的差异(BCI 企业特有):
@@ -14,9 +14,29 @@
  *   node scripts/ownership.mjs                  # 裸跑 = --example
  *   node scripts/ownership.mjs --example        # 内置示例(故意埋入 6 处告警情形)
  *   node scripts/ownership.mjs data.json        # 计算并输出 Markdown
+ *   node scripts/ownership.mjs data.json --config fund.json   # 用外部参数集计算
+ *   node scripts/ownership.mjs --print-defaults # 打印内置参数为一份合法 config
+ *
+ * 参数集(--config)与标的输入必须分开, 理由见 dd_score.mjs 头部说明。
+ * 本脚本只消费 config 的 params.ownership 一块, 其余块(dd_score 用的权重与倍数)
+ * 一律忽略但不报错 —— 同一份机构口径文件应能同时喂给两个脚本。
+ *
+ * config.params.ownership 可覆盖字段:
+ *   leverage_flag    number    表决权 / 经济利益 的提示阈值, 必须 > 1
+ *   esop_floor       number    期权池占总股本的下限百分比, >= 5
+ *   nominee_flag     number    代持比例提示阈值百分比, >= 1
+ *   redeem_rules     [[阈值, 标签, 释义], ...]   必须严格递减, 至少 2 档
+ *   board_tolerance  number    董事席位与股权错配容差, 0 至 1
+ *   scenarios        [{label, dilution_pct, esop_topup_pct}]
+ *   lines_add        [{threshold, short, desc}]  只允许新增控制线
+ *
+ * 锁死项(不可覆盖, 覆盖即 exit 2):
+ *   LINES 中 66.67 / 50 / 33.34 / 10 / 1 五个法定阈值 —— 是《公司法》事实, 不是偏好
+ *   UCHAIN_NODES 的 id 与名称   —— 与 references/08-legal-ip.md 同名同序
+ *   TYPE_NAMES / ROLE_NAMES 的键 —— schema enum
  *
  * 输入 JSON 字段:
- *   meta        {as_of, currency?}                 as_of 必填(股权基准日)
+ *   meta        {as_of, currency?, params_ref?}    as_of 必填(股权基准日)
  *   cap_table   [{holder, type, pct?, shares?, voting_pct?, board_seats?, note?}]
  *               type ∈ founder|professor|staff|staff_platform|esop_pool|fund|corp|nominee|other
  *               pct 与 shares 二者取一(同时给则以 shares 为准并告警)
@@ -44,26 +64,31 @@
  *   scenarios   [{label, dilution_pct, esop_topup_pct}]   缺省用内置四档
  *
  * 输出节序(契约):
- *   输入概要 → 一 全稀释穿透 → 二 高校成果转化权属链 → 三 代持与名义持有人还原
+ *   输入概要 [→ 参数口径与溯源(H3, 仅当参数与内置默认不同时出现)]
+ *   → 一 全稀释穿透 → 二 高校成果转化权属链 → 三 代持与名义持有人还原
  *   → 四 持股平台与表决权杠杆 → 五 可转债 / SAFE 摊薄模拟
  *   → 六 对赌与回购触发压力 → 七 创始人控制权稳定性推演
  *   → 八 结论与待补文件清单 → 警告
  *   条件节(二/三/四/五)在输入缺失时整节省略, 节号自动顺延。
  *
+ * 退出码: 0 正常 | 1 输入读取或解析失败 | 2 参数集非法(--config 与 --example 互斥同此)
+ *
  * 纪律:
  *   - 所有比例数字以本脚本 stdout 为准, 禁止口算覆盖或改写。
  *   - 任何输入缺失只产出「警告」, 不中断计算: 能算多少算多少。
+ *   - 参数集非法一律中断(exit 2): 阈值错了, 每个结论都是错的。
  *   - 控制权推演为摊薄近似(按稀释比例线性折算), 不替代律师的精确测算。
  *   - 本脚本输出为尽调辅助分析, 不构成法律意见, 亦不构成投资建议。
  */
 
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 // ============================================================
 // 常量区
 // ============================================================
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const CN = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
 
 /** 控制线: [阈值, 简称, 释义] */
@@ -205,19 +230,274 @@ function money(x) {
 
 const pct = (x) => num(x, 2) + "%";
 
-function hitsLines(v) {
+function hitsLines(v, extraLines = []) {
+  const all = [...LINES, ...extraLines].sort((a, b) => Number(b[0]) - Number(a[0]));
   const out = [];
-  for (const [th, short] of LINES) if (v >= th) out.push(`${pct(th)} ${short}`);
+  for (const [th, short] of all) if (v >= th) out.push(`${pct(th)} ${short}`);
   return out;
+}
+
+// ============================================================
+// 参数集: 校验与合并
+// ============================================================
+
+const isPlain = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+const hasVal = (x) => x !== undefined && x !== null;
+const today = () => new Date().toISOString().slice(0, 10);
+
+/** 内置默认参数集: 只含本脚本消费的字段 */
+const DEFAULTS = Object.freeze({
+  LEVERAGE_FLAG,
+  ESOP_FLOOR,
+  NOMINEE_FLAG,
+  REDEEM_RULES,
+  BOARD_TOLERANCE,
+  SCENARIOS: CONTROL_SCENARIOS,
+  LINES_ADD: [],
+});
+
+/** config 顶层允许的键: 与 dd_score 共用同一份文件, 故取并集 */
+const CONFIG_KEYS = ["config_version", "id", "label", "as_of", "effective_from", "expires_on", "basis", "params", "sources", "param_sources", "derived_from", "_doc"];
+
+/** params 允许的键: 取两个脚本的并集, 未消费的块一律忽略但不报错 */
+const PARAM_KEYS = ["weights", "stage_factor", "gate_factor", "rev_mult", "milestones", "prob", "confidence", "runway", "w_cap", "deviation_threshold", "verdict_thresholds", "ownership", "rf_extensions", "_doc"];
+
+/** params.ownership 允许的键 */
+const OWN_KEYS = ["leverage_flag", "esop_floor", "nominee_flag", "redeem_rules", "board_tolerance", "scenarios", "lines_add", "_doc"];
+
+const OWN_LABELS = {
+  leverage_flag: ["LEVERAGE_FLAG", 1],
+  esop_floor: ["ESOP_FLOOR", 1],
+  nominee_flag: ["NOMINEE_FLAG", 1],
+  redeem_rules: ["REDEEM_RULES", 4],
+  board_tolerance: ["BOARD_TOLERANCE", 1],
+  scenarios: ["CONTROL_SCENARIOS", 4],
+  lines_add: ["LINES_ADD", 0],
+};
+
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 1e-9;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  if (isPlain(a) && isPlain(b)) {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    return ka.every((k) => deepEqual(a[k], b[k]));
+  }
+  return false;
+}
+
+/** 块内是否至少有一个非 null 值。数组视为一个整体: 非空即已声明 */
+const blockDeclared = (b) => (Array.isArray(b) ? b.length > 0 : isPlain(b) && Object.keys(b).some((k) => k !== "_doc" && hasVal(b[k])));
+
+function validateConfig(cfg) {
+  const errors = [];
+  const warns = [];
+  const E = (c, m) => errors.push(`${c} ${m}`);
+  const W = (c, m) => warns.push(`${c} ${m}`);
+
+  if (!isPlain(cfg)) {
+    E("V-01", "参数集必须是一个 JSON 对象");
+    return { errors, warns, stale: false, proxyCount: 0, sourceRefs: [] };
+  }
+  for (const k of Object.keys(cfg)) {
+    if (!CONFIG_KEYS.includes(k)) E("V-01", `顶层出现未知键 "${k}", 已拒绝: 拼写错误被静默忽略会让整份参数集失效而无人察觉`);
+  }
+  const p = isPlain(cfg.params) ? cfg.params : {};
+  if (cfg.params !== undefined && !isPlain(cfg.params)) E("V-01", "params 必须是对象");
+  for (const k of Object.keys(p)) {
+    if (!PARAM_KEYS.includes(k)) E("V-01", `params 出现未知键 "${k}", 已拒绝`);
+  }
+  if (!cfg.config_version) E("V-01", "config_version 缺失, 当前应为 \"1.0\"");
+  if (!cfg.id || !/^[a-z0-9][a-z0-9-]{2,39}$/.test(String(cfg.id))) E("V-01", `id=${cfg.id || "(缺失)"} 不合规: 须匹配 ^[a-z0-9][a-z0-9-]{2,39}$`);
+  if (!cfg.label) E("V-01", "label 缺失");
+  if (!cfg.as_of) E("V-01", "as_of 缺失(参数观测截止日)");
+
+  const o = isPlain(p.ownership) ? p.ownership : {};
+  for (const k of Object.keys(o)) {
+    if (!OWN_KEYS.includes(k)) E("V-01", `params.ownership 出现未知键 "${k}", 已拒绝`);
+  }
+
+  // 标量阈值
+  const scalar = (key, min, max, unit) => {
+    if (!hasVal(o[key])) return;
+    const v = Number(o[key]);
+    if (!isFinite(v)) E("V-04", `ownership.${key}=${o[key]} 不是数值`);
+    else if (v < min || v > max) E("V-04", `ownership.${key}=${o[key]} 超出 ${min} 至 ${max} ${unit}`);
+  };
+  scalar("leverage_flag", 1.0001, 10, "倍");
+  scalar("esop_floor", 5, 30, "%");
+  scalar("nominee_flag", 1, 50, "%");
+  scalar("board_tolerance", 0, 1, "");
+
+  // 回购档位
+  if (blockDeclared(o.redeem_rules)) {
+    const rows = o.redeem_rules;
+    if (!Array.isArray(rows) || rows.length < 2) E("V-05", "ownership.redeem_rules 至少两档");
+    else {
+      let prev = Infinity;
+      rows.forEach((r, i) => {
+        const th = Number(Array.isArray(r) ? r[0] : NaN);
+        if (!isFinite(th)) E("V-05", `ownership.redeem_rules[${i}] 阈值非数值`);
+        else if (th >= prev) E("V-05", `ownership.redeem_rules[${i}] 阈值 ${th} 未严格递减`);
+        if (Array.isArray(r) && !String(r[1] || "").trim()) E("V-05", `ownership.redeem_rules[${i}] 缺档位标签`);
+        prev = isFinite(th) ? th : prev;
+      });
+    }
+  }
+
+  // 情景
+  if (blockDeclared(o.scenarios)) {
+    if (!Array.isArray(o.scenarios) || !o.scenarios.length) E("V-05", "ownership.scenarios 必须是非空数组");
+    else {
+      o.scenarios.forEach((s, i) => {
+        if (!isPlain(s)) { E("V-05", `ownership.scenarios[${i}] 必须是对象`); return; }
+        const d = Number(s.dilution_pct);
+        const t = Number(s.esop_topup_pct);
+        if (!isFinite(d) || d < 0 || d > 100) E("V-05", `ownership.scenarios[${i}].dilution_pct=${s.dilution_pct} 非法`);
+        if (!isFinite(t) || t < 0 || t > 100) E("V-05", `ownership.scenarios[${i}].esop_topup_pct=${s.esop_topup_pct} 非法`);
+      });
+    }
+  }
+
+  // 只允许新增控制线, 不允许改动法定阈值
+  if (blockDeclared(o.lines_add)) {
+    if (!Array.isArray(o.lines_add)) E("V-01", "ownership.lines_add 必须是数组");
+    else {
+      const legal = LINES.map((x) => x[0]);
+      o.lines_add.forEach((r, i) => {
+        const th = Number(r && r.threshold);
+        if (!isFinite(th) || th <= 0 || th >= 100) { E("V-05", `ownership.lines_add[${i}].threshold 非法`); return; }
+        if (legal.some((x) => Math.abs(x - th) < 1e-9)) {
+          E("V-05", `ownership.lines_add[${i}] 试图改动 ${th}%: 66.67 / 50 / 33.34 / 10 / 1 五个阈值是《公司法》事实, 不是可由口径调整的偏好`);
+        }
+      });
+    }
+  }
+
+  // 溯源(只统计 ownership.* 的引用, 其余块归 dd_score.mjs)
+  const srcs = Array.isArray(cfg.sources) ? cfg.sources : [];
+  const refs = isPlain(cfg.param_sources) ? cfg.param_sources : {};
+  const allRefs = [...new Set(Object.entries(refs).filter(([k]) => String(k).startsWith("ownership")).flatMap(([, v]) => (Array.isArray(v) ? v : [])).filter((x) => typeof x === "string"))];
+  const srcIds = new Set(srcs.map((s) => s && s.id));
+  for (const r of allRefs) if (!srcIds.has(r)) E("V-16", `param_sources 引用了不存在的来源 ${r}: 强制溯源, 不留后门`);
+  const levels = new Map(srcs.map((s) => [s && s.id, s && s.level]));
+  const prim = allRefs.filter((r) => ["一级", "二级"].includes(levels.get(r)));
+  const overridden = OWN_KEYS.filter((k) => k !== "_doc" && blockDeclared(o[k]));
+  if (overridden.length && !allRefs.length) W("V-19", `参数集覆盖了 ${overridden.length} 个块但未声明任何来源: 输出将标注「未溯源」`);
+  else if (allRefs.length && !prim.length) E("V-17", "param_sources 全部为三级或更低来源: 生效中参数至少需要 1 条一级或二级来源");
+
+  let stale = false;
+  if (cfg.expires_on) {
+    if (String(cfg.expires_on) < today()) {
+      stale = true;
+      W("V-18", `参数集已于 ${cfg.expires_on} 过失效日: 输出将标注 STALE, 不阻断计算, 但结论时效性由使用方承担`);
+    }
+  } else {
+    stale = true;
+    W("V-18", "参数集未声明 expires_on: 无法判断时效性, 输出将标注 STALE");
+  }
+
+  return { errors, warns, stale, proxyCount: srcs.filter((s) => s && s.proxy === true && allRefs.includes(s.id)).length, sourceRefs: allRefs };
+}
+
+function resolveParams(cfg, opts = {}) {
+  if (!cfg) return DEFAULTS;
+  const o = isPlain(cfg.params) && isPlain(cfg.params.ownership) ? cfg.params.ownership : {};
+  const out = {
+    LEVERAGE_FLAG: DEFAULTS.LEVERAGE_FLAG,
+    ESOP_FLOOR: DEFAULTS.ESOP_FLOOR,
+    NOMINEE_FLAG: DEFAULTS.NOMINEE_FLAG,
+    REDEEM_RULES: DEFAULTS.REDEEM_RULES,
+    BOARD_TOLERANCE: DEFAULTS.BOARD_TOLERANCE,
+    SCENARIOS: DEFAULTS.SCENARIOS,
+    LINES_ADD: DEFAULTS.LINES_ADD,
+  };
+  const ov = [];
+  if (hasVal(o.leverage_flag)) { out.LEVERAGE_FLAG = Number(o.leverage_flag); ov.push("leverage_flag"); }
+  if (hasVal(o.esop_floor)) { out.ESOP_FLOOR = Number(o.esop_floor); ov.push("esop_floor"); }
+  if (hasVal(o.nominee_flag)) { out.NOMINEE_FLAG = Number(o.nominee_flag); ov.push("nominee_flag"); }
+  if (hasVal(o.board_tolerance)) { out.BOARD_TOLERANCE = Number(o.board_tolerance); ov.push("board_tolerance"); }
+  if (blockDeclared(o.redeem_rules)) {
+    out.REDEEM_RULES = o.redeem_rules.map((r) => [Number(r[0]), String(r[1]), String(r[2] || "")]);
+    ov.push("redeem_rules");
+  }
+  if (blockDeclared(o.scenarios)) {
+    out.SCENARIOS = o.scenarios.map((s) => ({ label: s.label || `稀释 ${Number(s.dilution_pct) || 0}%`, dilution_pct: Number(s.dilution_pct) || 0, esop_topup_pct: Number(s.esop_topup_pct) || 0 }));
+    ov.push("scenarios");
+  }
+  if (blockDeclared(o.lines_add)) {
+    out.LINES_ADD = o.lines_add.map((r) => [Number(r.threshold), String(r.short || ""), String(r.desc || "")]);
+    ov.push("lines_add");
+  }
+
+  const same = Object.keys(DEFAULTS).every((k) => deepEqual(out[k], DEFAULTS[k]));
+  if (same) return DEFAULTS;
+
+  const v = validateConfig(cfg);
+  out.__meta = {
+    id: String(cfg.id || "unnamed"),
+    hash8: opts.hash8 || "00000000",
+    label: String(cfg.label || ""),
+    overrides: ov,
+    asOf: cfg.as_of || "",
+    effectiveFrom: cfg.effective_from || "",
+    expiresOn: cfg.expires_on || "",
+    stale: v.stale,
+    proxyCount: v.proxyCount,
+    sourceRefs: v.sourceRefs,
+    untraced: !v.sourceRefs.length,
+    warns: v.warns,
+    checks: v.warns.length ? `通过(V-01..V-19, 含 ${v.warns.length} 条提示)` : "通过(V-01..V-19)",
+  };
+  return out;
+}
+
+function defaultsAsConfig() {
+  return {
+    config_version: "1.0",
+    id: "builtin-default",
+    label: "内置默认参数",
+    as_of: today(),
+    effective_from: today(),
+    expires_on: "9999-12-31",
+    basis: { upstream_version: VERSION, builtin: true },
+    params: {
+      ownership: {
+        leverage_flag: DEFAULTS.LEVERAGE_FLAG,
+        esop_floor: DEFAULTS.ESOP_FLOOR,
+        nominee_flag: DEFAULTS.NOMINEE_FLAG,
+        redeem_rules: DEFAULTS.REDEEM_RULES,
+        board_tolerance: DEFAULTS.BOARD_TOLERANCE,
+        scenarios: DEFAULTS.SCENARIOS,
+        lines_add: DEFAULTS.LINES_ADD,
+      },
+    },
+    sources: [],
+    param_sources: {},
+  };
+}
+
+function describeOverrides(list) {
+  return list.map((k) => {
+    const m = OWN_LABELS[k];
+    return m ? `${m[0]}(${m[1]})` : k;
+  }).join(", ");
 }
 
 // ============================================================
 // 计算
 // ============================================================
 
-function analyze(d) {
+function analyze(d, P = DEFAULTS, extra = []) {
   const warnings = [];
   const w = (m) => warnings.push(m);
+  if (P.__meta && Array.isArray(P.__meta.warns)) P.__meta.warns.forEach((x) => w(x));
+  extra.forEach((x) => w(x));
 
   const meta = d.meta || {};
   if (!meta.as_of) w("meta.as_of 缺失, 请以股权基准日填写");
@@ -344,7 +624,7 @@ function analyze(d) {
   const nom = Array.isArray(d.nominal_holders) ? d.nominal_holders.filter(Boolean) : [];
   nom.forEach((n) => {
     if (!n.has_agreement) w(`代持「${n.nominal} → ${n.beneficial}」无书面代持协议: 还原主张缺乏证据, 申报前必须清理`);
-    if (Number(n.pct) >= NOMINEE_FLAG) w(`代持比例 ${pct(Number(n.pct))} 达到 ${NOMINEE_FLAG}% 以上: 还原后表决权结构发生实质变化`);
+    if (Number(n.pct) >= P.NOMINEE_FLAG) w(`代持比例 ${pct(Number(n.pct))} 达到 ${P.NOMINEE_FLAG}% 以上: 还原后表决权结构发生实质变化`);
   });
 
   // ---- 4. 平台与表决权杠杆
@@ -386,7 +666,7 @@ function analyze(d) {
   });
   const principalRow = founderRows.length ? founderRows.reduce((a, b) => (b.vote > a.vote ? b : a)) : null;
   const leverage = principalRow && principalRow.pctNow > 0 ? principalRow.vote / principalRow.pctNow : null;
-  if (leverage !== null && leverage > LEVERAGE_FLAG) {
+  if (leverage !== null && leverage > P.LEVERAGE_FLAG) {
     w(`创始人「${principalRow.holder}」以 ${pct(principalRow.pctNow)} 的经济利益控制 ${pct(principalRow.vote)} 表决权(杠杆 ${num(leverage, 2)} 倍): 差额来自表决权委托或特别表决权安排, 需核查有效期、可撤销性与失效条件`);
   }
 
@@ -400,7 +680,7 @@ function analyze(d) {
   const redeemRatio = liquidity && liquidity > 0 ? redeem / liquidity : null;
   let redeemTier = null;
   if (redeemRatio !== null) {
-    for (const [th, label, desc] of REDEEM_RULES) {
+    for (const [th, label, desc] of P.REDEEM_RULES) {
       if (redeemRatio >= th) { redeemTier = { th, label, desc }; break; }
     }
   }
@@ -411,7 +691,7 @@ function analyze(d) {
   if (redeem > 0 && cash === null) w("存在回购义务但未提供现金数据: 无法计算回购压力");
 
   // ---- 6. 控制权稳定性推演
-  const scenarios = (Array.isArray(d.scenarios) && d.scenarios.length ? d.scenarios : CONTROL_SCENARIOS).map((s) => {
+  const scenarios = (Array.isArray(d.scenarios) && d.scenarios.length ? d.scenarios : P.SCENARIOS).map((s) => {
     const dil = Number(s.dilution_pct) || 0;
     const top = Number(s.esop_topup_pct) || 0;
     // 近似: 新增股本 = 稀释比例 + 期权池补足(均按占现股本百分比), 原股东按比例摊薄
@@ -439,14 +719,14 @@ function analyze(d) {
   } else if (boardTotal > 0) {
     w(`创始人提名董事 ${boardFounder}/${boardTotal} 席未过半: 组织控制弱于股权口径, 需结合一票否决事项评估`);
   }
-  if (boardSeats > 0 && coreVote >= 50 && founderSeats / boardSeats < coreVote / 100 - BOARD_TOLERANCE) {
+  if (boardSeats > 0 && coreVote >= 50 && founderSeats / boardSeats < coreVote / 100 - P.BOARD_TOLERANCE) {
     w(`席位与股权错配: 表决权 ${pct(coreVote)} 但董事席位占比仅 ${pct((founderSeats / boardSeats) * 100)}`);
   }
 
   // ---- 期权池
   const esopTotal = isFinite(Number(esop.total_pct)) ? Number(esop.total_pct) : 0;
-  if (esopTotal > 0 && esopTotal < ESOP_FLOOR) {
-    w(`期权池占总股本 ${pct(esopTotal)} 低于 ${ESOP_FLOOR}% 的常见下限: BCI 关键人才竞争激烈, 后续授予空间可能不足`);
+  if (esopTotal > 0 && esopTotal < P.ESOP_FLOOR) {
+    w(`期权池占总股本 ${pct(esopTotal)} 低于 ${P.ESOP_FLOOR}% 的常见下限: BCI 关键人才竞争激烈, 后续授予空间可能不足`);
   }
 
   // ---- 清算优先
@@ -476,6 +756,7 @@ function analyze(d) {
     terms, cash, credit, liquidity, redeem, redeemRatio, redeemTier,
     scenarios, boardTotal, boardFounder, boardSeats, founderSeats,
     esopTotal, todo, warnings,
+    paramsMeta: P.__meta || null,
   };
 }
 
@@ -483,7 +764,7 @@ function analyze(d) {
 // 渲染
 // ============================================================
 
-function render(r) {
+function render(r, P = DEFAULTS) {
   const L = [];
   const p = (s = "") => L.push(s);
   let secNo = 0;
@@ -495,7 +776,7 @@ function render(r) {
 
   const bar = "=".repeat(56);
   p(bar);
-  p(`BCI OWNERSHIP & CONTROL  v${VERSION}`);
+  p(r.paramsMeta ? `BCI OWNERSHIP & CONTROL  v${VERSION}  |  params: ${r.paramsMeta.id}@${r.paramsMeta.hash8}` : `BCI OWNERSHIP & CONTROL  v${VERSION}`);
   p(bar);
   p("");
 
@@ -505,6 +786,18 @@ function render(r) {
   p(`- 完全稀释调整: ${[r.convTotal > 0 ? `可转债 ${pct(r.convTotal)}` : null, r.reserved > 0 ? `期权池预留 ${pct(r.reserved)}` : null].filter(Boolean).join(" + ") || "无"} → 稀释后总口径 ${pct(r.fdTotal)}`);
   p(`- 创始人核心组: ${[...r.core].join("、") || "未识别"}`);
   p("");
+
+  // ---- 参数口径与溯源(H3, 刻意不调 sec(), 理由同 dd_score.mjs)
+  if (r.paramsMeta) {
+    const m = r.paramsMeta;
+    p("### 参数口径与溯源");
+    p(`- 参数集: ${m.id} | 基线: 内置默认 v${VERSION} | 校验: ${m.checks}`);
+    p(`- 覆盖范围: ${describeOverrides(m.overrides) || "无"} | 其余沿用默认`);
+    p(`- 参数来源: ${m.sourceRefs.length ? m.sourceRefs.join(", ") : "未声明"} | 未溯源项: ${m.untraced ? m.overrides.length : 0} | 代理样本项: ${m.proxyCount}`);
+    p(`- 生效日: ${m.effectiveFrom || "-"} | 失效日: ${m.expiresOn || "-"} | 状态: ${m.stale ? "STALE" : "生效中"}`);
+    p("> 本节说明本次计算所用的方法学参数来源与版本。参数为方法学假设, 不构成对任何主体的法律意见。");
+    p("");
+  }
 
   // ---- 一、全稀释穿透
   p(sec("股权结构穿透(全稀释口径)"));
@@ -566,10 +859,10 @@ function render(r) {
     if (r.principalRow) {
       p(`- 首席创始人「${r.principalRow.holder}」: 经济利益 ${pct(r.principalRow.pctNow)}, 表决权 ${pct(r.principalRow.vote)}, 杠杆率 **${r.leverage !== null ? num(r.leverage, 2) : "-"}**`);
     }
-    if (r.leverage !== null && r.leverage > LEVERAGE_FLAG) {
+    if (r.leverage !== null && r.leverage > P.LEVERAGE_FLAG) {
       p(`- 杠杆存在意味着表决权多于经济利益, 来源通常是平台 GP 控制、表决权委托或特别表决权安排。该安排的价值在于稳定性, 风险在于可撤销性: 需核查合伙协议中 GP 更换、退伙与份额转让条款, 以及一致行动协议的有效期与解除条件。`);
     } else {
-      p(`- 表决权与经济利益基本一致(杠杆率不大于 ${num(LEVERAGE_FLAG, 2)}), 控制权主要依赖股权本身而非协议安排。`);
+      p(`- 表决权与经济利益基本一致(杠杆率不大于 ${num(P.LEVERAGE_FLAG, 2)}), 控制权主要依赖股权本身而非协议安排。`);
     }
     p("");
   }
@@ -631,9 +924,9 @@ function render(r) {
   if (r.nom.some((n) => !n.has_agreement)) concl.push("存在无书面协议的代持");
   if (r.redeemTier && ["严重", "偏高"].includes(r.redeemTier.label)) concl.push(`回购压力${r.redeemTier.label}`);
   if (r.terms.personal_guarantee === true) concl.push("创始人个人连带");
-  if (r.leverage !== null && r.leverage > LEVERAGE_FLAG) concl.push(`控制权依赖协议杠杆(${num(r.leverage, 2)} 倍)`);
+  if (r.leverage !== null && r.leverage > P.LEVERAGE_FLAG) concl.push(`控制权依赖协议杠杆(${num(r.leverage, 2)} 倍)`);
   p(concl.length ? `- 主要风险点: ${concl.join("; ")}。` : "- 未发现结构性控制权风险。");
-  p(`- 核心组表决权 ${pct(r.coreVote)}, 对应控制线: ${hitsLines(r.coreVote).join("; ") || "未达任何控制线"}`);
+  p(`- 核心组表决权 ${pct(r.coreVote)}, 对应控制线: ${hitsLines(r.coreVote, P.LINES_ADD).join("; ") || "未达任何控制线"}`);
   p("");
   p("### 待补文件");
   for (const t of r.todo) p(`- ${t}`);
@@ -652,13 +945,89 @@ function render(r) {
 // main
 // ============================================================
 
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes("--example")) {
-  process.stdout.write(render(analyze(EXAMPLE_OBJ)));
+const argv = process.argv.slice(2);
+const KNOWN_FLAGS = ["--example", "--print-defaults"];
+
+let configPath = null;
+const rest = [];
+for (let i = 0; i < argv.length; i += 1) {
+  const a = argv[i];
+  if (a === "--config") {
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      console.error("--config 需要一个文件路径");
+      process.exit(2);
+    }
+    configPath = next;
+    i += 1;
+    continue;
+  }
+  if (a.startsWith("--config=")) {
+    configPath = a.slice("--config=".length);
+    continue;
+  }
+  rest.push(a);
+}
+
+const unknown = rest.find((a) => a.startsWith("--") && !KNOWN_FLAGS.includes(a));
+if (unknown) {
+  console.error(`未知参数 ${unknown}; 可用: ${KNOWN_FLAGS.join(" ")} --config <file>`);
+  process.exit(2);
+}
+const wantExample = rest.includes("--example");
+const wantPrint = rest.includes("--print-defaults");
+const positional = rest.filter((a) => !a.startsWith("--"));
+
+if (wantPrint) {
+  if (configPath) {
+    console.error("--print-defaults 与 --config 互斥: 前者输出内置默认参数, 后者加载外部参数集");
+    process.exit(2);
+  }
+  process.stdout.write(JSON.stringify(defaultsAsConfig(), null, 2) + "\n");
+  process.exit(0);
+}
+if (wantExample && configPath) {
+  console.error("--example 与 --config 互斥: 内置示例是 CI 回归基线之一, 不接受口径覆盖");
+  process.exit(2);
+}
+if (positional.length > 1) {
+  console.error(`只接受一个输入文件, 收到 ${positional.length} 个: ${positional.join(", ")}`);
+  process.exit(2);
+}
+
+// ---- 加载参数集: 非法即中止, 不做「部分可用」
+let cfg = null;
+let hash8 = null;
+if (configPath) {
+  let raw;
+  try {
+    raw = readFileSync(configPath, "utf8");
+  } catch (e) {
+    console.error(`读取参数集失败: ${e.message}`);
+    process.exit(2);
+  }
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    console.error(`参数集解析失败: ${e.message}`);
+    process.exit(2);
+  }
+  const v = validateConfig(cfg);
+  if (v.errors.length) {
+    console.error("参数集校验未通过, 已中止(阈值错了, 每个结论都是错的):");
+    for (const x of v.errors) console.error(`  - ${x}`);
+    process.exit(2);
+  }
+  hash8 = createHash("sha256").update(raw).digest("hex").slice(0, 8);
+}
+const P = resolveParams(cfg, { hash8 });
+
+if (!positional.length) {
+  process.stdout.write(render(analyze(EXAMPLE_OBJ, P), P));
   process.exit(0);
 }
 
-const file = args.find((a) => a !== "--example");
+const file = positional[0];
 let data;
 try {
   data = JSON.parse(readFileSync(file, "utf8"));
@@ -674,4 +1043,14 @@ if (!data.meta || !data.meta.as_of) {
   console.error("缺少 meta.as_of(股权基准日, YYYY-MM-DD)");
   process.exit(1);
 }
-process.stdout.write(render(analyze(data)));
+
+const extra = [];
+if (data.meta.params_ref) {
+  const actual = P.__meta ? `${P.__meta.id}@${P.__meta.hash8}` : null;
+  if (!actual) {
+    extra.push(`输入声明 meta.params_ref=${data.meta.params_ref}, 但本次未加载参数集(--config): 该输入的结论不可按声明口径复算`);
+  } else if (actual !== data.meta.params_ref) {
+    extra.push(`输入声明 meta.params_ref=${data.meta.params_ref}, 实际加载 ${actual}: 复算基线已失效`);
+  }
+}
+process.stdout.write(render(analyze(data, P, extra), P));

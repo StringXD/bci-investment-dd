@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#engineering-conventions)
-[![Version](https://img.shields.io/badge/version-0.1.0-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-informational.svg)](CHANGELOG.md)
 
 > The full document set is in Chinese; this file is the English overview. Contributions of English translations are welcome.
 
@@ -62,6 +62,24 @@ node scripts/ownership.mjs examples/03-cap-table.json
 
 Output is Markdown. Sections `一` to `七` map one-to-one to the report template; the final section is always `## 警告` (warnings), listing every missing input with subject names and concrete values.
 
+### Calibrating to your own mandate
+
+The built-in weights and multiple bands are structural placeholders; they are meant to be recalibrated. Put the calibration in a **separate** parameter file and pass it with `--config`:
+
+```bash
+# export the built-in defaults as an editable parameter set
+node scripts/dd_score.mjs --print-defaults > fund-2026q4.json
+
+# run with it; the banner will carry the parameter-set fingerprint
+node scripts/dd_score.mjs data.json --config fund-2026q4.json
+```
+
+Why not put the parameters inside the target file: parameters expire quarterly, target data expires per deal. Mixing them means forwarding a case for peer review also leaks your fund's weighting — and the report can no longer tell "the parameters changed" from "the target's numbers changed".
+
+An invalid parameter set aborts with `exit 2` and lists the failing `V-01`–`V-19` rule codes. **If the parameters are wrong, every number downstream is wrong; there is no partial use.** Equivalence of empty/default parameter sets and reproducibility of the three examples are enforced by `bash tests/run.sh`.
+
+Some parameters are locked: red-flag IDs and severities, `allow_option`, the gate logic, milestone paths and classification codes. Allowing severity overrides would mean allowing a veto-class red flag to be downgraded — the one door this framework keeps shut.
+
 ## The nine dimensions
 
 | # | Dimension | Items | Focus |
@@ -83,8 +101,9 @@ Milestones run `L0 proof of concept → L1 type testing → L2 large-animal safe
 - **Zero dependencies.** Node standard library only. No network, no file writes, stdout only.
 - **Compute what you can.** Missing input produces a warning, never an exception. Problems are collected into the final section with subject names and values.
 - **Section numbers are a contract.** Scripts emit sections `一`–`七` plus a final `## 警告`; the report template follows the same numbering.
-- **Parameters are assumptions, not facts.** Weights, stage factors, multiple bands and milestone durations are constant tables. Calibrate them to your own fund mandate and declare the version in the report.
+- **Parameters are assumptions, not facts.** Weights, stage factors, multiple bands and milestone durations are constant tables. Calibrate them via `--config` (never by editing the target file) and declare both the version and the fingerprint in the report.
 - **No mental arithmetic.** Every number in the report is copied verbatim from script output.
+- **Reproducible.** Same input plus same parameter set yields the same report. Record `params: <id>@<hash8>` into `meta.params_ref` to close the loop.
 
 ## Regulatory facts used
 
