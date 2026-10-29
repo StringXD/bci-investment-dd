@@ -1,0 +1,79 @@
+{
+  "schema": "jurisdiction-profile/1",
+  "id": "eu",
+  "as_of": "2026-10-27",
+  "currency": "EUR",
+  "admission_only": true,
+  "_doc": "欧盟档只做准入对照(MDR Rule 8 / Rule 11 并列、公告机构、CE、EUDAMED、HTA JCA), 不建评分档 —— 所以 admission_only 为真: 拿本档做评分必须 exit 2(P-06), 而不是悄悄用中国的阈值算出一个数。",
+  "control_lines": {
+    "charter_defined": true,
+    "source_ref": "控制线由公司章程与股东协议约定, 各成员国公司法差异大, 无统一阈值",
+    "as_of": "2026-10-27",
+    "status": "methodology"
+  },
+  "rev_mult": {
+    "edges": [],
+    "source_ref": "不适用: 本档只做准入对照, 不建估值评分口径",
+    "as_of": "2026-10-27",
+    "status": "pending"
+  },
+  "sensitivity_rates": [0.08, 0.12, 0.15],
+  "exit_channels": [
+    {
+      "key": "ma",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "无监管门槛: 由买方类型与支付能力决定",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "secondary",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "无监管门槛: 老股转让与二级份额交易由交易双方约定",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ipo_us",
+      "is_channel": true,
+      "applicable": false,
+      "source_ref": "本档标的为欧盟注册主体, 本档不评估美股上市路径",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ipo_hk_18a",
+      "is_channel": true,
+      "applicable": false,
+      "source_ref": "本档不评估港股路径",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ipo_star_5",
+      "is_channel": true,
+      "applicable": false,
+      "source_ref": "科创板面向境内注册企业",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "unknown",
+      "is_channel": false,
+      "applicable": true,
+      "source_ref": "非通道: 输入未填退出路径时的兜底",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "EU-G1",
+      "item": "公告机构(MDR)的手数料与排队周期",
+      "why": "各家公告机构自行定价, 无公开统一价目",
+      "how": "向目标公告机构询价并登记询价日"
+    }
+  ]
+}

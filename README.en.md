@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#engineering-conventions)
-[![Version](https://img.shields.io/badge/version-0.4.0-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-informational.svg)](CHANGELOG.md)
 
 > The full document set is in Chinese; this file is the English overview. Contributions of English translations are welcome.
 
@@ -94,6 +94,26 @@ This emits `{ schema, script_version, ... }` where `schema` is `dd-score-output/
 Why not parse the terminal Markdown instead: that turns formatting details into an interface. Change a column width or a punctuation mark and every downstream consumer breaks silently — and looks correct while doing so. JSON fields only grow within a minor version; ignore keys you do not recognise.
 
 `--json` and the default output come from the **same computation**; `tests/run.sh` asserts the two scores must match exactly, otherwise it would mean maintaining two sets of logic.
+
+### Output language
+
+The report is bilingual: `--lang zh-CN` (default) or `--lang en-US`.
+
+```bash
+node scripts/dd_score.mjs data.json --lang en-US
+node scripts/ownership.mjs cap.json --lang en-US
+node scripts/dd_score.mjs --print-defaults --lang en-US   # parameter-set labels follow too
+```
+
+Definition language and number scale move independently. A Chinese report on a USD deal reads `USD 12.5 亿`; an English report on a CNY deal reads `CNY 1.25B`. Each audience gets the magnitude word it actually thinks in, and the currency is never silently assumed.
+
+Three rules this version is built around:
+
+- **The Chinese output is byte-identical to v0.4.0.** Chinese strings are inlined at the call site as the default value of `t(key, "中文", vars)`; the English catalog is the only lookup table. A mirrored zh/en pair of catalogs would let a well-meaning wording cleanup change the Chinese text silently, and the Chinese output is what every golden file compares against.
+- **A missing English key is a hard error (exit 2), never a fallback to Chinese.** A fallback produces a half-translated report that renders successfully — the worst possible failure mode for a paid deliverable.
+- **An unsupported locale is also exit 2.** There is no "closest match": if `en` and `en-US` behaved differently, the report would stop being reproducible.
+
+`assets/i18n/zh-CN.json` is a generated mirror, not the source of truth. Regenerate it with `node tools/dump-catalog.mjs` after editing any user-facing string; `node tools/dump-catalog.mjs --check` fails the build when it drifts.
 
 ## The nine dimensions
 

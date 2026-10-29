@@ -1,0 +1,64 @@
+{
+  "schema": "sections-lock/1",
+  "generated_by": "tools/gen-sections-lock.mjs",
+  "generated_from": {
+    "registry": "scripts/lib/sections.mjs#SECTION_REGISTRY",
+    "template": "assets/templates/report-template.md",
+    "template_sha256": "7fd1565cf9290d2d1f270112fa8b5b612de8f6114656a3a046e121529c73d001"
+  },
+  "template_locales": [
+    "zh-CN"
+  ],
+  "slots": {
+    "zh-CN": [
+      "## 一、资产属性门禁",
+      "## 二、里程碑定位(L0-L6)",
+      "## 三、九维加权评分",
+      "## 四、致命红旗筛查",
+      "## 五、现金跑道与里程碑可达性",
+      "## 六、估值口径与偏离提示",
+      "## 七、结论与证据缺口",
+      "## 八、股权与控制权专项"
+    ],
+    "en-US": [
+      "## 1. Asset-class gate",
+      "## 2. Milestone position (L0-L6)",
+      "## 3. Nine-dimension weighted score",
+      "## 4. Fatal red-flag screen",
+      "## 5. Cash runway and milestone reachability",
+      "## 6. Valuation basis and deviation check",
+      "## 7. Conclusion and evidence gaps",
+      "## 8. Equity and control review"
+    ]
+  },
+  "titles": {
+    "zh-CN": [
+      "资产属性门禁",
+      "里程碑定位(L0-L6)",
+      "九维加权评分",
+      "致命红旗筛查",
+      "现金跑道与里程碑可达性",
+      "估值口径与偏离提示",
+      "结论与证据缺口",
+      "股权与控制权专项"
+    ],
+    "en-US": [
+      "Asset-class gate",
+      "Milestone position (L0-L6)",
+      "Nine-dimension weighted score",
+      "Fatal red-flag screen",
+      "Cash runway and milestone reachability",
+      "Valuation basis and deviation check",
+      "Conclusion and evidence gaps",
+      "Equity and control review"
+    ]
+  },
+  "unnumbered_in_template": {
+    "summary": "## 摘要"
+  },
+  "not_in_template": [
+    "inputBrief",
+    "params",
+    "warnings"
+  ]
+}

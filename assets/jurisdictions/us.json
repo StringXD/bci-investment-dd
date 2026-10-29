@@ -1,0 +1,89 @@
+{
+  "schema": "jurisdiction-profile/1",
+  "id": "us",
+  "as_of": "2026-10-27",
+  "currency": "USD",
+  "admission_only": false,
+  "_doc": "美国档。两处关键的「不给默认值」: 控制线由章程约定(私募与上市后差异极大, 给一套通用阈值等于编), 收入倍数档边界未核实(pending → 估值节出拒答而不是出数字)。",
+  "control_lines": {
+    "charter_defined": true,
+    "source_ref": "控制线由公司章程/投资人协议约定, 无全国统一的法定持股阈值可比",
+    "as_of": "2026-10-27",
+    "status": "methodology"
+  },
+  "rev_mult": {
+    "edges": [],
+    "source_ref": "未核实: 美国医疗器械可比交易倍数需按细分赛道与年份分别取数, 本档尚无登记样本",
+    "as_of": "2026-10-27",
+    "status": "pending"
+  },
+  "sensitivity_rates": [
+    0.08,
+    0.12,
+    0.15
+  ],
+  "exit_channels": [
+    {
+      "key": "ipo_us",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "NASDAQ / NYSE listing standards (multiple concurrent tiers by market cap, revenue and equity)",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ipo_hk_18a",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "HKEX Main Board Listing Rules Chapter 18A: also applies to offshore-registered issuers",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ma",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "No regulatory gate: determined by buyer type and paying capacity (see content/exit/01-buyer-map.md)",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "secondary",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "No regulatory gate: secondary transfers and LP-share trades are negotiated between the parties",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ipo_star_5",
+      "is_channel": true,
+      "applicable": false,
+      "source_ref": "The STAR Market Tier-5 standard targets domestic unprofitable issuers; this profile's target does not fall in its scope",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "unknown",
+      "is_channel": false,
+      "applicable": true,
+      "source_ref": "Not a channel: the fallback when the input declares no exit path; never read as 'multiple options available'",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "US-G1",
+      "item": "Comparable M&A revenue multiples for medical devices (by sub-segment x year)",
+      "why": "No registered sample: quoting multiples without one would be fabrication, hence rev_mult is pending",
+      "how": "Extract deal-by-deal from public M&A announcements, registering parties, timing and consideration structure"
+    },
+    {
+      "id": "US-G2",
+      "item": "Common control provisions (classified boards, dual-class shares, drag-along)",
+      "why": "Contract facts differ per company and cannot be derived from the jurisdiction",
+      "how": "Read the target's charter and investor rights agreements directly"
+    }
+  ]
+}

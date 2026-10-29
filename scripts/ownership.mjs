@@ -16,6 +16,13 @@
  *   node scripts/ownership.mjs data.json        # 计算并输出 Markdown
  *   node scripts/ownership.mjs data.json --config fund.json   # 用外部参数集计算
  *   node scripts/ownership.mjs --print-defaults # 打印内置参数为一份合法 config
+ *   node scripts/ownership.mjs data.json --lang en-US         # 英文输出
+ *   node scripts/ownership.mjs data.json --jurisdiction us    # 辖区(暂只影响币种默认与 JSON 标注)
+ *   node scripts/ownership.mjs --dump-catalog   # 导出中文词表到 stdout(供 tools/dump-catalog.mjs 合并)
+ *
+ * 语言: 中文是源码内联字面量(t() 的第二个参数), 英文查 assets/i18n/en-US.json。
+ * 英文缺 key 一律抛错, 不回落中文 —— 回落会让报告混进中文而看起来「成功」。
+ * 中文输出与 v0.4.0 逐字相同, 由 tests/run.sh 的 examples/03 比对守着。
  *
  * 参数集(--config)与标的输入必须分开, 理由见 dd_score.mjs 头部说明。
  * 本脚本只消费 config 的 params.ownership 一块, 其余块(dd_score 用的权重与倍数)
@@ -69,9 +76,11 @@
  *   → 四 持股平台与表决权杠杆 → 五 可转债 / SAFE 摊薄模拟
  *   → 六 对赌与回购触发压力 → 七 创始人控制权稳定性推演
  *   → 八 结论与待补文件清单 → 警告
- *   条件节(二/三/四/五)在输入缺失时整节省略, 节号自动顺延。
+ *   二/三/四/五 为条件节: 输入缺失时**节号保留**, 该节下输出一条「本节不适用」。
+ *   (v0.4.0 及以前是整节省略且节号顺延, 结果是缺一节就把「结论」印成「七、」,
+ *    与报告模板的跨章引用错位, 而且不报错。)
  *
- * 退出码: 0 正常 | 1 输入读取或解析失败 | 2 参数集非法(--config 与 --example 互斥同此)
+ * 退出码: 0 正常 | 1 输入读取或解析失败 | 2 参数集非法或上下文非法(--config 与 --example 互斥同此)
  *
  * 纪律:
  *   - 所有比例数字以本脚本 stdout 为准, 禁止口算覆盖或改写。
@@ -81,24 +90,70 @@
  *   - 本脚本输出为尽调辅助分析, 不构成法律意见, 亦不构成投资建议。
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import {
+  DEFAULT_LOCALE,
+  dumpCatalog,
+  makeI18n,
+  normalizeLocale,
+  resetDump,
+  resolveContext,
+} from "./lib/i18n.mjs";
+import { formatMoney } from "./lib/money.mjs";
+import { ProfileError, loadProfile } from "./lib/jurisdiction.mjs";
 
 // ============================================================
 // 常量区
 // ============================================================
 
 const VERSION = "0.3.0";
-const CN = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+
+/**
+ * 节位表。原来靠 `secNo += 1` 顺序发号, 条件节(二/三/四/五)缺失时后面所有
+ * 节号整体前移一格 —— 「结论」会印成「六、」, 与 report-template 的引用错位,
+ * 而且不报错。改成槽位寻址: 缺节留一条「本节不适用」, 编号不动。
+ * 与 dd_score 的 sections.mjs 同一套思路, 但本脚本是独立成篇的报告, 故自持槽位。
+ */
+const OWN_SECTIONS = [
+  { key: "cap", slot: 1, zh: "股权结构穿透(全稀释口径)" },
+  { key: "uni", slot: 2, zh: "高校成果转化权属链核查", conditional: true },
+  { key: "nom", slot: 3, zh: "代持与名义持有人还原", conditional: true },
+  { key: "plat", slot: 4, zh: "持股平台与表决权杠杆", conditional: true },
+  { key: "conv", slot: 5, zh: "可转债 / SAFE 转股摊薄模拟", conditional: true },
+  { key: "redeem", slot: 6, zh: "对赌与回购触发压力" },
+  { key: "ctrl", slot: 7, zh: "创始人控制权稳定性推演" },
+  { key: "concl", slot: 8, zh: "结论与待补文件清单" },
+];
 
 /** 控制线: [阈值, 简称, 释义] */
-const LINES = [
+/** 内置控制线(中国档)。运行时可能被辖区档替换, 见 applyProfile。 */
+let LINES = [
   [66.67, "特别决议通过线", "修改章程、增减注册资本、合并分立解散、变更公司形式"],
   [50.0, "普通决议控制线", "多数日常经营与人事事项"],
   [33.34, "特别决议否决线", "单独或联合持有即可阻却特别决议"],
   [10.0, "会议召集线", "可请求召开临时股东会(具体比例按现行《公司法》核对)"],
   [1.0, "提案线", "可提出临时提案(股份公司口径, 须核对现行条文)"],
 ];
+
+/**
+ * 本辖区是否「控制线由章程约定」。
+ * 美国档没有全国统一的持股阈值, 此时**不能**退回内置五条: 那等于把中国的
+ * 法定线当成美国的常识。也不能输出「未达任何控制线」—— 那是把「不知道」
+ * 写成「没有」, 是本框架最需要避免的一类错误。
+ */
+let CHARTER_DEFINED = false;
+
+/**
+ * 本辖区的控制线阈值处于 status=pending(未核实)。
+ *
+ * 这一位不能省: thresholds 有数值不代表它已被核实。档里写了五条 66.67/50/33.34/10/1
+ * 但标 pending 时, 若仍照原样输出「已越过 50% 特别决议线」, 报告就把一个未核实的
+ * 阈值当成法律事实引用了 —— 而读者完全看不出来。所以此时只留表决权数字, 判定改出拒答行。
+ */
+let LINES_PENDING = false;
 
 /** 高校成果转化权属链五节点, 与 references/08-legal-ip.md 同名同序 */
 const UCHAIN_NODES = [
@@ -153,6 +208,13 @@ const ROLE_NAMES = {
   dean: "院长",
   legal_rep: "法定代表人",
 };
+
+/**
+ * 枚举的显示名。键是 schema enum(永不翻译), 值是中文默认值。
+ * 未登记的键回退为键本身 —— 输入里出现枚举外的值时, 报警告比静默显示空更好。
+ */
+const typeName = (k) => t(`own.type.${k}`, TYPE_NAMES[k] || k);
+const roleName = (k) => t(`own.role.${k}`, ROLE_NAMES[k] || k);
 
 const EXAMPLE_OBJ = {
   meta: { as_of: "2026-09-30", currency: "CNY" },
@@ -209,6 +271,36 @@ const EXAMPLE_OBJ = {
 };
 
 // ============================================================
+// 运行期上下文: locale / 辖区 / 币种
+// ============================================================
+
+/**
+ * 与 dd_score.mjs 同一套取舍: 三项运行期状态放模块级变量, 不逐层透传。
+ * 理由: 中文输出必须逐字不变, 而原有函数签名里没有 locale 位置, 为传 locale
+ * 去改上百个调用点的签名, 等于把「不改中文」这条约束本身变成风险源。
+ * 代价是同一进程内不能并发跑两个 locale —— 本脚本是单次命令行进程, 成立。
+ */
+let LOCALE = DEFAULT_LOCALE;
+let JURISDICTION = "cn";
+let CURRENCY = "CNY";
+let I18N = makeI18n(DEFAULT_LOCALE);
+
+/** 取文案。第二个参数是中文默认值 —— 中文 locale 下原样返回, 英文查词表。 */
+const t = (key, zhDefault, vars) => I18N.t(key, zhDefault, vars);
+/** 列举分隔符: 中文顿号, 英文逗号。写死「、」在英文里会粘成一坨。 */
+const sep = () => t("ui.sep", "、");
+const list = (arr) => (Array.isArray(arr) ? arr : [arr]).join(sep());
+
+function setContext({ locale, jurisdiction, currency }) {
+  if (locale) {
+    LOCALE = normalizeLocale(locale);
+    I18N = makeI18n(LOCALE);
+  }
+  if (jurisdiction) JURISDICTION = String(jurisdiction).toLowerCase();
+  if (currency) CURRENCY = String(currency).toUpperCase();
+}
+
+// ============================================================
 // 工具
 // ============================================================
 
@@ -220,20 +312,65 @@ function num(x, d = 1) {
   return s;
 }
 
+/** 金额格式化。量级词跟随 locale, 币种符号跟随币种, 两者正交(见 lib/money.mjs)。 */
 function money(x) {
-  if (x === null || x === undefined || !isFinite(x)) return "-";
-  const a = Math.abs(x);
-  if (a >= 1e8) return num(x / 1e8, 2) + " 亿";
-  if (a >= 1e4) return num(x / 1e4, 1) + " 万";
-  return num(x, 0);
+  return formatMoney(x, { currency: CURRENCY, locale: LOCALE });
 }
 
 const pct = (x) => num(x, 2) + "%";
 
+/**
+ * 命中哪些控制线。简称走词表: 法定阈值本身是法律事实, 但它的中文名字不是,
+ * 直接拼进英文报告会得到 "66.67% 特别决议通过线" 这种半英半中。
+ */
+/** 内置五条的快照: 档覆盖后仍要用它做「阈值 → 简称」的对照。 */
+const BUILTIN_LINES = LINES;
+
+let PROFILE_DIR = fileURLToPath(new URL("../assets/jurisdictions/", import.meta.url));
+
+/**
+ * 用辖区档替换控制线。
+ *
+ * 档里只给阈值, 简称仍由词表按阈值寻址(own.line.<阈值>) —— 标签只住词表。
+ * 所以档里出现一个词表没有的阈值时必须中止: 否则报告会印出「20% 」这种
+ * 没有名字的线, 读者无从判断它是什么。
+ */
+function applyProfile(profile) {
+  const cl = profile.control_lines || {};
+  CHARTER_DEFINED = cl.charter_defined === true;
+  // 阈值有数值 ≠ 阈值已核实。pending 时保留 LINES(还要靠它做阈值→简称的对照),
+  // 但结论行不再据此判定, 见 renderOwn 里的 LINES_PENDING 分支。
+  LINES_PENDING = cl.status === "pending" && Array.isArray(cl.thresholds) && cl.thresholds.length > 0;
+  if (CHARTER_DEFINED) {
+    LINES = [];
+    return;
+  }
+  const ths = Array.isArray(cl.thresholds) ? cl.thresholds.map(Number) : null;
+  if (!ths) {
+    LINES = BUILTIN_LINES;
+    return;
+  }
+  const unknown = ths.filter((th) => !BUILTIN_LINES.some((l) => l[0] === th));
+  if (unknown.length) {
+    throw new ProfileError(
+      "P-02",
+      "$.control_lines.thresholds",
+      `阈值 ${unknown.join(", ")} 没有对应的词表条目(own.line.<阈值>): 报告会印出没有名字的控制线`
+    );
+  }
+  LINES = ths.map((th) => BUILTIN_LINES.find((l) => l[0] === th));
+}
+
 function hitsLines(v, extraLines = []) {
   const all = [...LINES, ...extraLines].sort((a, b) => Number(b[0]) - Number(a[0]));
   const out = [];
-  for (const [th, short] of all) if (v >= th) out.push(`${pct(th)} ${short}`);
+  for (const [th, short] of all) {
+    // 内置五条按阈值寻址; lines_add 新增的线没有内置译名, 原样输出(属机构数据)
+    const label = LINES.some((l) => l[0] === th && l[1] === short)
+      ? t(`own.line.${th}`, short)
+      : short;
+    if (v >= th) out.push(`${pct(th)} ${label}`);
+  }
   return out;
 }
 
@@ -461,7 +598,7 @@ function defaultsAsConfig() {
   return {
     config_version: "1.0",
     id: "builtin-default",
-    label: "内置默认参数",
+    label: t("ui.builtinLabel", "内置默认参数"),
     as_of: today(),
     effective_from: today(),
     expires_on: "9999-12-31",
@@ -500,21 +637,21 @@ function analyze(d, P = DEFAULTS, extra = []) {
   extra.forEach((x) => w(x));
 
   const meta = d.meta || {};
-  if (!meta.as_of) w("meta.as_of 缺失, 请以股权基准日填写");
+  if (!meta.as_of) w(t("own.w.asOf", "meta.as_of 缺失, 请以股权基准日填写"));
 
   // ---- 0. cap table 归一
   const cap = Array.isArray(d.cap_table) ? d.cap_table.filter((x) => x && x.holder) : [];
-  if (!cap.length) w("cap_table 为空: 无法进行股权穿透");
+  if (!cap.length) w(t("own.w.capEmpty", "cap_table 为空: 无法进行股权穿透"));
 
   cap.forEach((row) => {
     if (row.pct !== undefined && row.shares !== undefined) {
-      w(`股东「${row.holder}」同时提供 pct 与 shares, 以 shares 折算为准, 请核对原始数据`);
+      w(t("own.w.pctShares", "股东「{holder}」同时提供 pct 与 shares, 以 shares 折算为准, 请核对原始数据", { holder: row.holder }));
     }
     if (row.pct === undefined && row.shares === undefined) {
-      w(`股东「${row.holder}」既无 pct 也无 shares, 按 0 处理`);
+      w(t("own.w.noPctShares", "股东「{holder}」既无 pct 也无 shares, 按 0 处理", { holder: row.holder }));
     }
     if (row.type && !TYPE_NAMES[row.type]) {
-      w(`股东「${row.holder}」的 type=${row.type} 不在取值域内, 按 other 处理`);
+      w(t("own.w.typeOut", "股东「{holder}」的 type={type} 不在取值域内, 按 other 处理", { holder: row.holder, type: row.type }));
     }
   });
 
@@ -524,7 +661,7 @@ function analyze(d, P = DEFAULTS, extra = []) {
   if (hasShares) {
     const totalShares = cap.reduce((a, x) => a + (Number(x.shares) || 0), 0);
     if (totalShares <= 0) {
-      w("全部股东的 shares 合计为 0: 无法折算比例");
+      w(t("own.w.sharesZero", "全部股东的 shares 合计为 0: 无法折算比例"));
       curTotal = 0;
     } else {
       curTotal = 100;
@@ -538,7 +675,7 @@ function analyze(d, P = DEFAULTS, extra = []) {
     cap.forEach((x) => { x._pct = Number(x.pct) || 0; });
   }
   if (curTotal > 0 && Math.abs(curTotal - 100) > 0.5) {
-    w(`现有股东持股合计 ${pct(curTotal)} 不等于 100%: 可能遗漏股东(含未登记的代持或期权池), 请补齐`);
+    w(t("own.w.totalNot100", "现有股东持股合计 {total} 不等于 100%: 可能遗漏股东(含未登记的代持或期权池), 请补齐", { total: pct(curTotal) }));
   }
   cap.forEach((x) => {
     x._vote = x.voting_pct !== undefined && x.voting_pct !== null ? Number(x.voting_pct) : x._pct;
@@ -554,10 +691,10 @@ function analyze(d, P = DEFAULTS, extra = []) {
     if (!isFinite(v) || v <= 0) {
       if (Number(c.principal) > 0 && Number(c.valuation_cap) > 0) {
         v = (Number(c.principal) / Number(c.valuation_cap)) * 100;
-        w(`可转债第 ${i + 1} 笔未提供 as_converted_pct, 已按 本金 / 估值上限 估算为 ${pct(v)}, 需以协议约定为准`);
+        w(t("own.w.convEstimated", "可转债第 {i} 笔未提供 as_converted_pct, 已按 本金 / 估值上限 估算为 {pct}, 需以协议约定为准", { i: i + 1, pct: pct(v) }));
       } else {
         v = 0;
-        w(`可转债第 ${i + 1} 笔缺少 as_converted_pct 且无法按估值上限估算, 摊薄模拟将偏低`);
+        w(t("own.w.convMissing", "可转债第 {i} 笔缺少 as_converted_pct 且无法按估值上限估算, 摊薄模拟将偏低", { i: i + 1 }));
       }
       c._estimated = true;
     }
@@ -569,10 +706,13 @@ function analyze(d, P = DEFAULTS, extra = []) {
   const hasPoolRow = cap.some((x) => x.type === "esop_pool");
   const reserved = hasPoolRow ? 0 : reservedRaw;
   if (hasPoolRow && reservedRaw > 0) {
-    w(`期权池同时以股东行(${pct(cap.filter((x) => x.type === "esop_pool").reduce((a, x) => a + x._pct, 0))})与 esop.reserved_pct(${pct(reservedRaw)})出现, 已按股东行口径计算, 请核对是否存在重复填报`);
+    w(t("own.w.poolDouble", "期权池同时以股东行({row})与 esop.reserved_pct({reserved})出现, 已按股东行口径计算, 请核对是否存在重复填报", {
+      row: pct(cap.filter((x) => x.type === "esop_pool").reduce((a, x) => a + x._pct, 0)),
+      reserved: pct(reservedRaw),
+    }));
   }
   const fdTotal = curTotal + convTotal + reserved;
-  if (fdTotal <= 0) w("完全稀释后总股本为 0: 无法计算稀释口径");
+  if (fdTotal <= 0) w(t("own.w.fdZero", "完全稀释后总股本为 0: 无法计算稀释口径"));
 
   const capOut = cap.map((x) => ({
     holder: x.holder,
@@ -587,13 +727,16 @@ function analyze(d, P = DEFAULTS, extra = []) {
   // ---- 2. 高校成果转化权属链
   const uni = d.university || {};
   const uniInvolved = uni.involved === true;
+  // 节点名与风险说明是文案(不是输入数据), 走词表; 用户自填的 note 保持原样
+  const uniNodeName = (id, fallback) => (fallback ? t(`own.uchain.${id}.name`, fallback) : id);
+  const uniNodeRisk = (id, fallback) => (fallback ? t(`own.uchain.${id}.risk`, fallback) : "");
   const nodes = (Array.isArray(uni.nodes) ? uni.nodes : []).map((n) => {
     const meta2 = UCHAIN_NODES.find((u) => u.id === n.id);
-    return { id: n.id, name: meta2 ? meta2.name : n.id, risk: meta2 ? meta2.risk : "", status: n.status || "missing", note: n.note || "" };
+    return { id: n.id, name: uniNodeName(n.id, meta2 && meta2.name), risk: uniNodeRisk(n.id, meta2 && meta2.risk), status: n.status || "missing", note: n.note || "" };
   });
   UCHAIN_NODES.forEach((u) => {
     if (uniInvolved && !nodes.find((n) => n.id === u.id)) {
-      nodes.push({ id: u.id, name: u.name, risk: u.risk, status: "missing", note: "未提供" });
+      nodes.push({ id: u.id, name: uniNodeName(u.id, u.name), risk: uniNodeRisk(u.id, u.risk), status: "missing", note: t("own.ui.notProvided", "未提供") });
     }
   });
   nodes.sort((a, b) => UCHAIN_NODES.findIndex((u) => u.id === a.id) - UCHAIN_NODES.findIndex((u) => u.id === b.id));
@@ -604,35 +747,39 @@ function analyze(d, P = DEFAULTS, extra = []) {
   if (uniInvolved) {
     const nodeOf = (id) => nodes.find((n) => n.id === id) || { status: "missing" };
     if (Number(uni.equity_held_by_school) > 0 && nodeOf("N3").status !== "done") {
-      w("学校或资产公司已持股但缺第三方评估作价报告(N3): 存在出资不实风险, 影响后续融资与申报");
+      w(t("own.w.n3Missing", "学校或资产公司已持股但缺第三方评估作价报告(N3): 存在出资不实风险, 影响后续融资与申报"));
     }
     if (["department_head", "dean", "legal_rep"].includes(uni.professor_role) && uni.part_time_approved !== true) {
-      w(`教授担任${ROLE_NAMES[uni.professor_role] || uni.professor_role}但未取得兼职或离岗创业批准: 存在任职合规与职务成果归属风险`);
+      w(t("own.w.roleNotApproved", "教授担任{role}但未取得兼职或离岗创业批准: 存在任职合规与职务成果归属风险", { role: roleName(uni.professor_role) }));
     }
     if (nodeOf("N2").status === "done" && nodeOf("N4").status !== "done") {
-      w("学校审批已完成但未办理工商登记(N4 缺失): 协议已签而权属未转移");
+      w(t("own.w.n4Missing", "学校审批已完成但未办理工商登记(N4 缺失): 协议已签而权属未转移"));
     }
     if (uni.ip_form === "license" && uni.license_written !== true) {
-      w("知识产权为许可形态但无书面许可协议: 权属链断裂, 独占性不成立");
+      w(t("own.w.licenseNoWritten", "知识产权为许可形态但无书面许可协议: 权属链断裂, 独占性不成立"));
     }
     if (uniCompleteness < 1) {
-      w(`成果转化权属链完整度 ${doneCnt}/${applicable.length}: 未闭合节点 ${applicable.filter((n) => n.status !== "done").map((n) => n.id).join("、")}`);
+      w(t("own.w.chainIncomplete", "成果转化权属链完整度 {done}/{total}: 未闭合节点 {nodes}", {
+        done: doneCnt,
+        total: applicable.length,
+        nodes: list(applicable.filter((n) => n.status !== "done").map((n) => n.id)),
+      }));
     }
   }
 
   // ---- 3. 代持还原
   const nom = Array.isArray(d.nominal_holders) ? d.nominal_holders.filter(Boolean) : [];
   nom.forEach((n) => {
-    if (!n.has_agreement) w(`代持「${n.nominal} → ${n.beneficial}」无书面代持协议: 还原主张缺乏证据, 申报前必须清理`);
-    if (Number(n.pct) >= P.NOMINEE_FLAG) w(`代持比例 ${pct(Number(n.pct))} 达到 ${P.NOMINEE_FLAG}% 以上: 还原后表决权结构发生实质变化`);
+    if (!n.has_agreement) w(t("own.w.nomNoAgreement", "代持「{nominal} → {beneficial}」无书面代持协议: 还原主张缺乏证据, 申报前必须清理", { nominal: n.nominal, beneficial: n.beneficial }));
+    if (Number(n.pct) >= P.NOMINEE_FLAG) w(t("own.w.nomPct", "代持比例 {pct} 达到 {flag}% 以上: 还原后表决权结构发生实质变化", { pct: pct(Number(n.pct)), flag: P.NOMINEE_FLAG }));
   });
 
   // ---- 4. 平台与表决权杠杆
   const platforms = Array.isArray(d.platforms) ? d.platforms.filter(Boolean) : [];
   platforms.forEach((p) => {
-    if (!p.gp) w(`持股平台「${p.name}」未标明 GP: 无法判断表决权归属`);
+    if (!p.gp) w(t("own.w.platNoGp", "持股平台「{name}」未标明 GP: 无法判断表决权归属", { name: p.name }));
     if (p.gp_control && !["founder", "committee", "external"].includes(p.gp_control)) {
-      w(`持股平台「${p.name}」的 gp_control=${p.gp_control} 不在取值域内, 按 external 处理`);
+      w(t("own.w.platGpDomain", "持股平台「{name}」的 gp_control={v} 不在取值域内, 按 external 处理", { name: p.name, v: p.gp_control }));
     }
   });
 
@@ -643,7 +790,7 @@ function analyze(d, P = DEFAULTS, extra = []) {
   concert.forEach((g) => {
     const members = g.filter((m) => cap.some((x) => x.holder === m));
     if (members.length < 2) {
-      w(`一致行动组 [${g.join("、")}] 有效成员不足 2 人, 已忽略`);
+      w(t("own.w.concertTooSmall", "一致行动组 [{members}] 有效成员不足 2 人, 已忽略", { members: list(g) }));
       return;
     }
     if (members.some((m) => core.has(m))) {
@@ -667,7 +814,12 @@ function analyze(d, P = DEFAULTS, extra = []) {
   const principalRow = founderRows.length ? founderRows.reduce((a, b) => (b.vote > a.vote ? b : a)) : null;
   const leverage = principalRow && principalRow.pctNow > 0 ? principalRow.vote / principalRow.pctNow : null;
   if (leverage !== null && leverage > P.LEVERAGE_FLAG) {
-    w(`创始人「${principalRow.holder}」以 ${pct(principalRow.pctNow)} 的经济利益控制 ${pct(principalRow.vote)} 表决权(杠杆 ${num(leverage, 2)} 倍): 差额来自表决权委托或特别表决权安排, 需核查有效期、可撤销性与失效条件`);
+    w(t("own.w.leverage", "创始人「{holder}」以 {econ} 的经济利益控制 {vote} 表决权(杠杆 {lev} 倍): 差额来自表决权委托或特别表决权安排, 需核查有效期、可撤销性与失效条件", {
+      holder: principalRow.holder,
+      econ: pct(principalRow.pctNow),
+      vote: pct(principalRow.vote),
+      lev: num(leverage, 2),
+    }));
   }
 
   // ---- 5. 回购压力
@@ -680,24 +832,39 @@ function analyze(d, P = DEFAULTS, extra = []) {
   const redeemRatio = liquidity && liquidity > 0 ? redeem / liquidity : null;
   let redeemTier = null;
   if (redeemRatio !== null) {
-    for (const [th, label, desc] of P.REDEEM_RULES) {
-      if (redeemRatio >= th) { redeemTier = { th, label, desc }; break; }
-    }
+    P.REDEEM_RULES.forEach(([th, label, desc], idx) => {
+      if (redeemRatio >= th && !redeemTier) {
+        // 档位标签与释义走词表; idx 保留下来给下游判定用, 不再靠中文标签比对
+        redeemTier = {
+          th,
+          idx,
+          label: t(`own.redeem.${idx}.label`, label),
+          desc: t(`own.redeem.${idx}.desc`, desc),
+        };
+      }
+    });
   }
-  if (terms.personal_guarantee === true) w("存在创始人个人连带责任: 需核对担保范围与个人资产敞口");
+  if (terms.personal_guarantee === true) w(t("own.w.personalGuarantee", "存在创始人个人连带责任: 需核对担保范围与个人资产敞口"));
   if (terms.redemption_trigger && !["ipo_deadline", "material_breach", "performance", "none"].includes(terms.redemption_trigger)) {
-    w(`terms.redemption_trigger=${terms.redemption_trigger} 不在取值域内`);
+    w(t("own.w.triggerDomain", "terms.redemption_trigger={v} 不在取值域内", { v: terms.redemption_trigger }));
   }
-  if (redeem > 0 && cash === null) w("存在回购义务但未提供现金数据: 无法计算回购压力");
+  if (redeem > 0 && cash === null) w(t("own.w.redeemNoCash", "存在回购义务但未提供现金数据: 无法计算回购压力"));
 
   // ---- 6. 控制权稳定性推演
-  const scenarios = (Array.isArray(d.scenarios) && d.scenarios.length ? d.scenarios : P.SCENARIOS).map((s) => {
+  const scenSrc = Array.isArray(d.scenarios) && d.scenarios.length ? d.scenarios : P.SCENARIOS;
+  // 内置四档的标签是文案, 要跟着语言走; 输入或参数集给的标签是数据, 一律原样保留
+  const fromDefaults = scenSrc === CONTROL_SCENARIOS;
+  const SCEN_KEY = ["base", "next10", "next20", "next30"];
+  const scenarios = scenSrc.map((s, i) => {
     const dil = Number(s.dilution_pct) || 0;
     const top = Number(s.esop_topup_pct) || 0;
     // 近似: 新增股本 = 稀释比例 + 期权池补足(均按占现股本百分比), 原股东按比例摊薄
     const after = coreVote * (100 / (100 + dil + top));
+    const label = fromDefaults && SCEN_KEY[i]
+      ? t(`own.scen.${SCEN_KEY[i]}`, s.label)
+      : s.label || t("own.scen.diluted", "稀释 {dil}%", { dil });
     return {
-      label: s.label || `稀释 ${dil}%`,
+      label,
       dilution: dil,
       topup: top,
       vote: after,
@@ -717,36 +884,39 @@ function analyze(d, P = DEFAULTS, extra = []) {
   if (boardTotal > 0 && boardFounder > boardTotal / 2) {
     // 过半席位: 记录但不告警
   } else if (boardTotal > 0) {
-    w(`创始人提名董事 ${boardFounder}/${boardTotal} 席未过半: 组织控制弱于股权口径, 需结合一票否决事项评估`);
+    w(t("own.w.boardMinority", "创始人提名董事 {f}/{t} 席未过半: 组织控制弱于股权口径, 需结合一票否决事项评估", { f: boardFounder, t: boardTotal }));
   }
   if (boardSeats > 0 && coreVote >= 50 && founderSeats / boardSeats < coreVote / 100 - P.BOARD_TOLERANCE) {
-    w(`席位与股权错配: 表决权 ${pct(coreVote)} 但董事席位占比仅 ${pct((founderSeats / boardSeats) * 100)}`);
+    w(t("own.w.boardMismatch", "席位与股权错配: 表决权 {vote} 但董事席位占比仅 {seats}", {
+      vote: pct(coreVote),
+      seats: pct((founderSeats / boardSeats) * 100),
+    }));
   }
 
   // ---- 期权池
   const esopTotal = isFinite(Number(esop.total_pct)) ? Number(esop.total_pct) : 0;
   if (esopTotal > 0 && esopTotal < P.ESOP_FLOOR) {
-    w(`期权池占总股本 ${pct(esopTotal)} 低于 ${P.ESOP_FLOOR}% 的常见下限: BCI 关键人才竞争激烈, 后续授予空间可能不足`);
+    w(t("own.w.esopLow", "期权池占总股本 {pct} 低于 {floor}% 的常见下限: BCI 关键人才竞争激烈, 后续授予空间可能不足", { pct: pct(esopTotal), floor: P.ESOP_FLOOR }));
   }
 
   // ---- 清算优先
   if (terms.liquidation_pref && !["1x_np", "1x", "2x", "other"].includes(terms.liquidation_pref)) {
-    w(`terms.liquidation_pref=${terms.liquidation_pref} 不在取值域内`);
+    w(t("own.w.prefDomain", "terms.liquidation_pref={v} 不在取值域内", { v: terms.liquidation_pref }));
   }
   if (terms.liquidation_pref === "2x") {
-    w("清算优先为 2 倍: 低估值退出情形下普通股可能拿不到对价, 需做清算瀑布测算");
+    w(t("own.w.pref2x", "清算优先为 2 倍: 低估值退出情形下普通股可能拿不到对价, 需做清算瀑布测算"));
   }
 
   // ---- 结论与待补文件
   const todo = [];
-  if (!cap.length) todo.push("完整股权结构表(含全部股东、持股平台与期权池)");
-  if (uniInvolved && uniCompleteness < 1) todo.push("成果转化五节点全套文件(发明人确认、学校批文与公示、评估报告、工商档案、收益分配协议)");
-  if (nom.some((n) => !n.has_agreement)) todo.push("代持协议原件与资金往来凭证(或代持解除协议)");
-  if (convs.some((c) => c._estimated)) todo.push("可转债 / SAFE 全套协议(含转股价、估值上限、折扣与到期安排)");
-  if (redeem > 0) todo.push("对赌与回购条款全文(触发条件、义务人、金额上限、豁免机制)");
-  if (terms.personal_guarantee) todo.push("创始人个人连带担保文件与资产状况说明");
-  if (boardSeats === 0) todo.push("公司章程与董事会构成、一票否决事项清单");
-  if (!todo.length) todo.push("无重大缺口, 建议补充最近一次融资的 SHA 全文以复核条款");
+  if (!cap.length) todo.push(t("own.todo.capTable", "完整股权结构表(含全部股东、持股平台与期权池)"));
+  if (uniInvolved && uniCompleteness < 1) todo.push(t("own.todo.uniChain", "成果转化五节点全套文件(发明人确认、学校批文与公示、评估报告、工商档案、收益分配协议)"));
+  if (nom.some((n) => !n.has_agreement)) todo.push(t("own.todo.nominee", "代持协议原件与资金往来凭证(或代持解除协议)"));
+  if (convs.some((c) => c._estimated)) todo.push(t("own.todo.convertible", "可转债 / SAFE 全套协议(含转股价、估值上限、折扣与到期安排)"));
+  if (redeem > 0) todo.push(t("own.todo.redeem", "对赌与回购条款全文(触发条件、义务人、金额上限、豁免机制)"));
+  if (terms.personal_guarantee) todo.push(t("own.todo.guarantee", "创始人个人连带担保文件与资产状况说明"));
+  if (boardSeats === 0) todo.push(t("own.todo.charter", "公司章程与董事会构成、一票否决事项清单"));
+  if (!todo.length) todo.push(t("own.todo.none", "无重大缺口, 建议补充最近一次融资的 SHA 全文以复核条款"));
 
   return {
     meta, capOut, curTotal, convTotal, reserved, fdTotal,
@@ -767,11 +937,26 @@ function analyze(d, P = DEFAULTS, extra = []) {
 function render(r, P = DEFAULTS) {
   const L = [];
   const p = (s = "") => L.push(s);
-  let secNo = 0;
-  const sec = (t) => {
-    const i = secNo;
-    secNo += 1;
-    return `## ${CN[i] || String(i + 1)}、${t}`;
+
+  // 节号按槽位取(OWN_SECTIONS.slot), 不再由发射顺序自增
+  const secDef = (key) => {
+    const d = OWN_SECTIONS.find((s) => s.key === key);
+    if (!d) throw new Error(`ownership: 未登记的节 ${key}`);
+    return d;
+  };
+  const sec = (key) => {
+    const d = secDef(key);
+    return t("ui.format.h2", "## {num}、{title}", {
+      num: I18N.numeral(d.slot),
+      title: t(`own.sec.${key}.title`, d.zh),
+    });
+  };
+  /** 条件节缺数据时的占位。不能直接不输出: 后面所有节号会整体前移一格。 */
+  const secSkip = (key, zhReason) => {
+    p(sec(key));
+    p("");
+    p(t("ui.sectionSkipped", "> 本节不适用: {reason}", { reason: t(`own.skip.${key}`, zhReason) }));
+    p("");
   };
 
   const bar = "=".repeat(56);
@@ -780,162 +965,262 @@ function render(r, P = DEFAULTS) {
   p(bar);
   p("");
 
-  p("## 输入概要");
-  p(`- 股权基准日: ${r.meta.as_of || "-"} | 币种: ${r.meta.currency || "CNY"}`);
-  p(`- 股东数: ${r.capOut.length} | 现股本口径合计: ${pct(r.curTotal)}`);
-  p(`- 完全稀释调整: ${[r.convTotal > 0 ? `可转债 ${pct(r.convTotal)}` : null, r.reserved > 0 ? `期权池预留 ${pct(r.reserved)}` : null].filter(Boolean).join(" + ") || "无"} → 稀释后总口径 ${pct(r.fdTotal)}`);
-  p(`- 创始人核心组: ${[...r.core].join("、") || "未识别"}`);
+  p("## " + t("sections.inputBrief.title", "输入概要"));
+  p(t("own.s.brief.asOf", "- 股权基准日: {asOf} | 币种: {cur}", { asOf: r.meta.as_of || "-", cur: CURRENCY }));
+  p(t("own.s.brief.holders", "- 股东数: {n} | 现股本口径合计: {total}", { n: r.capOut.length, total: pct(r.curTotal) }));
+  p(t("own.s.brief.fdAdjust", "- 完全稀释调整: {adjust} → 稀释后总口径 {total}", {
+    adjust: [
+      r.convTotal > 0 ? t("own.s.brief.convPart", "可转债 {pct}", { pct: pct(r.convTotal) }) : null,
+      r.reserved > 0 ? t("own.s.brief.reservedPart", "期权池预留 {pct}", { pct: pct(r.reserved) }) : null,
+    ].filter(Boolean).join(" + ") || t("own.s.brief.none", "无"),
+    total: pct(r.fdTotal),
+  }));
+  p(t("own.s.brief.core", "- 创始人核心组: {members}", { members: list([...r.core]) || t("own.s.brief.coreNone", "未识别") }));
   p("");
 
-  // ---- 参数口径与溯源(H3, 刻意不调 sec(), 理由同 dd_score.mjs)
+  // ---- 参数口径与溯源(H3, 刻意不编号, 理由同 dd_score.mjs)
   if (r.paramsMeta) {
     const m = r.paramsMeta;
-    p("### 参数口径与溯源");
-    p(`- 参数集: ${m.id} | 基线: 内置默认 v${VERSION} | 校验: ${m.checks}`);
-    p(`- 覆盖范围: ${describeOverrides(m.overrides) || "无"} | 其余沿用默认`);
-    p(`- 参数来源: ${m.sourceRefs.length ? m.sourceRefs.join(", ") : "未声明"} | 未溯源项: ${m.untraced ? m.overrides.length : 0} | 代理样本项: ${m.proxyCount}`);
-    p(`- 生效日: ${m.effectiveFrom || "-"} | 失效日: ${m.expiresOn || "-"} | 状态: ${m.stale ? "STALE" : "生效中"}`);
-    p("> 本节说明本次计算所用的方法学参数来源与版本。参数为方法学假设, 不构成对任何主体的法律意见。");
+    p("### " + t("sections.params.title", "参数口径与溯源"));
+    p(t("own.s.params.id", "- 参数集: {id} | 基线: 内置默认 v{v} | 校验: {checks}", { id: m.id, v: VERSION, checks: m.checks }));
+    p(t("own.s.params.range", "- 覆盖范围: {overrides} | 其余沿用默认", { overrides: describeOverrides(m.overrides) || t("own.s.brief.none", "无") }));
+    p(t("own.s.params.src", "- 参数来源: {refs} | 未溯源项: {untraced} | 代理样本项: {proxy}", {
+      refs: m.sourceRefs.length ? m.sourceRefs.join(", ") : t("own.s.params.undeclared", "未声明"),
+      untraced: m.untraced ? m.overrides.length : 0,
+      proxy: m.proxyCount,
+    }));
+    p(t("own.s.params.dates", "- 生效日: {from} | 失效日: {to} | 状态: {status}", {
+      from: m.effectiveFrom || "-",
+      to: m.expiresOn || "-",
+      status: m.stale ? "STALE" : t("own.s.params.active", "生效中"),
+    }));
+    p(t("own.s.params.note", "> 本节说明本次计算所用的方法学参数来源与版本。参数为方法学假设, 不构成对任何主体的法律意见。"));
     p("");
   }
 
   // ---- 一、全稀释穿透
-  p(sec("股权结构穿透(全稀释口径)"));
-  p("| 主体 | 类型 | 现持股 | 全稀释 | 表决权 | 董事席位 | 备注 |");
+  p(sec("cap"));
+  p(t("own.tbl.cap.header", "| 主体 | 类型 | 现持股 | 全稀释 | 表决权 | 董事席位 | 备注 |"));
   p("|---|---|---|---|---|---|---|");
   for (const x of [...r.capOut].sort((a, b) => b.pctNow - a.pctNow)) {
     const isCore = r.core.has(x.holder);
-    p(`| ${isCore ? `**${x.holder}**` : x.holder} | ${TYPE_NAMES[x.type] || x.type} | ${pct(x.pctNow)} | ${pct(x.pctFd)} | ${pct(x.vote)} | ${x.board || "-"} | ${x.note || "-"} |`);
+    p(`| ${isCore ? `**${x.holder}**` : x.holder} | ${typeName(x.type)} | ${pct(x.pctNow)} | ${pct(x.pctFd)} | ${pct(x.vote)} | ${x.board || "-"} | ${x.note || "-"} |`);
   }
   if (r.convTotal > 0) {
-    p(`| 可转债 / SAFE(未转股) | 未转股工具 | - | ${pct(r.convTotal)} | ${pct(r.convTotal)} | - | 转股后成为普通股 |`);
+    p(t("own.tbl.cap.convRow", "| 可转债 / SAFE(未转股) | 未转股工具 | - | {fd} | {vote} | - | 转股后成为普通股 |", {
+      fd: pct(r.convTotal),
+      vote: pct(r.convTotal),
+    }));
   }
-  p(`| **合计** | | **${pct(r.capOut.reduce((a, x) => a + x.pctNow, 0))}** | **${pct(r.capOut.reduce((a, x) => a + x.pctFd, 0) + (r.convTotal > 0 && r.fdTotal > 0 ? (r.convTotal / r.fdTotal) * 100 : 0))}** | **${pct(r.capOut.reduce((a, x) => a + x.vote, 0))}** | **${r.capOut.reduce((a, x) => a + x.board, 0)}** | |`);
+  p(t("own.tbl.cap.total", "| **合计** | | **{now}** | **{fd}** | **{vote}** | **{board}** | |", {
+    now: pct(r.capOut.reduce((a, x) => a + x.pctNow, 0)),
+    fd: pct(r.capOut.reduce((a, x) => a + x.pctFd, 0) + (r.convTotal > 0 && r.fdTotal > 0 ? (r.convTotal / r.fdTotal) * 100 : 0)),
+    vote: pct(r.capOut.reduce((a, x) => a + x.vote, 0)),
+    board: r.capOut.reduce((a, x) => a + x.board, 0),
+  }));
   p("");
   if (r.concertApplied.length) {
-    p(`- 已合并的一致行动组: ${r.concertApplied.map((g) => `[${g.join("、")}]`).join("; ")}`);
+    p(t("own.s.cap.concert", "- 已合并的一致行动组: {groups}", { groups: r.concertApplied.map((g) => `[${list(g)}]`).join("; ") }));
   }
   p("");
 
   // ---- 二、成果转化权属链(条件节)
   if (r.uniInvolved) {
-    p(sec("高校成果转化权属链核查"));
-    p("> 比例对不等于权属对。五节点任一缺失, 都可能使核心技术的权属在申报或诉讼中被质疑。");
+    p(sec("uni"));
+    p(t("own.s.uni.note", "> 比例对不等于权属对。五节点任一缺失, 都可能使核心技术的权属在申报或诉讼中被质疑。"));
     p("");
-    p("| 节点 | 名称 | 状态 | 若缺失的风险 | 备注 |");
+    p(t("own.tbl.uni.header", "| 节点 | 名称 | 状态 | 若缺失的风险 | 备注 |"));
     p("|---|---|---|---|---|");
     for (const n of r.nodes) {
-      p(`| ${n.id} | ${n.name} | ${n.status === "done" ? "已闭合" : n.status === "na" ? "不适用" : "**未闭合**"} | ${n.risk} | ${n.note || "-"} |`);
+      const st = n.status === "done"
+        ? t("own.status.done", "已闭合")
+        : n.status === "na"
+          ? t("own.status.na", "不适用")
+          : t("own.status.missing", "**未闭合**");
+      p(`| ${n.id} | ${n.name} | ${st} | ${n.risk} | ${n.note || "-"} |`);
     }
     p("");
-    p(`- 完整度: **${r.doneCnt}/${r.applicable.length}**(${pct(r.uniCompleteness * 100)})`);
-    p(`- 知识产权形态: ${r.uni.ip_form || "未说明"} | 学校或资产公司持股: ${pct(Number(r.uni.equity_held_by_school) || 0)} | 教授在校职务: ${ROLE_NAMES[r.uni.professor_role] || "未说明"} | 兼职批准: ${r.uni.part_time_approved === true ? "已批" : "**未批或未提供**"}`);
+    p(t("own.s.uni.completeness", "- 完整度: **{done}/{total}**({pct})", {
+      done: r.doneCnt,
+      total: r.applicable.length,
+      pct: pct(r.uniCompleteness * 100),
+    }));
+    p(t("own.s.uni.facts", "- 知识产权形态: {ip} | 学校或资产公司持股: {equity} | 教授在校职务: {role} | 兼职批准: {approved}", {
+      ip: r.uni.ip_form || t("own.s.uni.ipUndeclared", "未说明"),
+      equity: pct(Number(r.uni.equity_held_by_school) || 0),
+      role: r.uni.professor_role ? roleName(r.uni.professor_role) : t("own.s.uni.ipUndeclared", "未说明"),
+      approved: r.uni.part_time_approved === true
+        ? t("own.s.uni.approved", "已批")
+        : t("own.s.uni.notApproved", "**未批或未提供**"),
+    }));
     p("");
+  } else {
+    secSkip("uni", "输入未涉及高校或院所成果转化");
   }
 
   // ---- 三、代持还原(条件节)
   if (r.nom.length) {
-    p(sec("代持与名义持有人还原"));
-    p("| 名义持有人 | 实际持有人 | 比例 | 原因 | 书面协议 | 风险 |");
+    p(sec("nom"));
+    p(t("own.tbl.nom.header", "| 名义持有人 | 实际持有人 | 比例 | 原因 | 书面协议 | 风险 |"));
     p("|---|---|---|---|---|---|");
     for (const n of r.nom) {
-      p(`| ${n.nominal} | ${n.beneficial} | ${pct(Number(n.pct) || 0)} | ${n.reason || "-"} | ${n.has_agreement ? "有" : "**无**"} | ${n.has_agreement ? "还原路径可执行, 但申报前仍须清理" : "还原主张缺证据, 存在权属争议与申报障碍"} |`);
+      const agreed = n.has_agreement ? t("own.nom.has", "有") : t("own.nom.hasNot", "**无**");
+      const risk = n.has_agreement
+        ? t("own.nom.riskOk", "还原路径可执行, 但申报前仍须清理")
+        : t("own.nom.riskNo", "还原主张缺证据, 存在权属争议与申报障碍");
+      p(`| ${n.nominal} | ${n.beneficial} | ${pct(Number(n.pct) || 0)} | ${n.reason || "-"} | ${agreed} | ${risk} |`);
     }
     p("");
-    p("> 代持还原同时转移经济利益与表决权。报告中须并列呈现「还原前」与「还原后」两套口径, 不得自行取舍。");
+    p(t("own.s.nom.note", "> 代持还原同时转移经济利益与表决权。报告中须并列呈现「还原前」与「还原后」两套口径, 不得自行取舍。"));
     p("");
+  } else {
+    secSkip("nom", "输入未提供代持或名义持有人信息");
   }
 
   // ---- 四、平台与杠杆(条件节)
   if (r.platforms.length) {
-    p(sec("持股平台与表决权杠杆"));
-    p("| 平台 | GP | 控制归属 | 执行事务合伙人 | LP 数 |");
+    p(sec("plat"));
+    p(t("own.tbl.plat.header", "| 平台 | GP | 控制归属 | 执行事务合伙人 | LP 数 |"));
     p("|---|---|---|---|---|");
     for (const x of r.platforms) {
-      p(`| ${x.name} | ${x.gp || "-"} | ${x.gp_control || "未说明"} | ${x.exec_partner || "-"} | ${x.lp_count || "-"} |`);
+      p(`| ${x.name} | ${x.gp || "-"} | ${x.gp_control ? t(`own.gpc.${x.gp_control}`, x.gp_control) : t("own.s.uni.ipUndeclared", "未说明")} | ${x.exec_partner || "-"} | ${x.lp_count || "-"} |`);
     }
     p("");
-    p(`- 创始人核心组: 经济利益 ${pct(r.coreEcon)}, 有效表决权 ${pct(r.coreVote)}`);
+    p(t("own.s.plat.core", "- 创始人核心组: 经济利益 {econ}, 有效表决权 {vote}", { econ: pct(r.coreEcon), vote: pct(r.coreVote) }));
     if (r.principalRow) {
-      p(`- 首席创始人「${r.principalRow.holder}」: 经济利益 ${pct(r.principalRow.pctNow)}, 表决权 ${pct(r.principalRow.vote)}, 杠杆率 **${r.leverage !== null ? num(r.leverage, 2) : "-"}**`);
+      p(t("own.s.plat.principal", "- 首席创始人「{holder}」: 经济利益 {econ}, 表决权 {vote}, 杠杆率 **{lev}**", {
+        holder: r.principalRow.holder,
+        econ: pct(r.principalRow.pctNow),
+        vote: pct(r.principalRow.vote),
+        lev: r.leverage !== null ? num(r.leverage, 2) : "-",
+      }));
     }
     if (r.leverage !== null && r.leverage > P.LEVERAGE_FLAG) {
-      p(`- 杠杆存在意味着表决权多于经济利益, 来源通常是平台 GP 控制、表决权委托或特别表决权安排。该安排的价值在于稳定性, 风险在于可撤销性: 需核查合伙协议中 GP 更换、退伙与份额转让条款, 以及一致行动协议的有效期与解除条件。`);
+      p(t("own.s.plat.leveraged", "- 杠杆存在意味着表决权多于经济利益, 来源通常是平台 GP 控制、表决权委托或特别表决权安排。该安排的价值在于稳定性, 风险在于可撤销性: 需核查合伙协议中 GP 更换、退伙与份额转让条款, 以及一致行动协议的有效期与解除条件。"));
     } else {
-      p(`- 表决权与经济利益基本一致(杠杆率不大于 ${num(P.LEVERAGE_FLAG, 2)}), 控制权主要依赖股权本身而非协议安排。`);
+      p(t("own.s.plat.aligned", "- 表决权与经济利益基本一致(杠杆率不大于 {flag}), 控制权主要依赖股权本身而非协议安排。", { flag: num(P.LEVERAGE_FLAG, 2) }));
     }
     p("");
+  } else {
+    secSkip("plat", "输入未提供持股平台信息");
   }
 
   // ---- 五、可转债摊薄(条件节)
   if (r.convs.length) {
-    p(sec("可转债 / SAFE 转股摊薄模拟"));
-    p("| 序号 | 类型 | 本金 | 估值上限 | 折扣 | 计入稀释 | 说明 |");
+    p(sec("conv"));
+    p(t("own.tbl.conv.header", "| 序号 | 类型 | 本金 | 估值上限 | 折扣 | 计入稀释 | 说明 |"));
     p("|---|---|---|---|---|---|---|");
     r.convs.forEach((c, i) => {
-      p(`| ${i + 1} | ${c.type || "-"} | ${money(Number(c.principal))} | ${money(Number(c.valuation_cap))} | ${c.discount ? num(Number(c.discount) * 100, 0) + "%" : "-"} | ${pct(c._pct)} | ${c._estimated ? "按估值上限估算, 需以协议为准" : "按协议约定"} |`);
+      const basis = c._estimated
+        ? t("own.s.conv.estimated", "按估值上限估算, 需以协议为准")
+        : t("own.s.conv.agreed", "按协议约定");
+      p(`| ${i + 1} | ${c.type || "-"} | ${money(Number(c.principal))} | ${money(Number(c.valuation_cap))} | ${c.discount ? num(Number(c.discount) * 100, 0) + "%" : "-"} | ${pct(c._pct)} | ${basis} |`);
     });
     p("");
-    p(`- 转股后合计稀释: ${pct(r.convTotal)}; 该部分已在第一节的全稀释列体现。`);
-    p(`- 需重点核对: 下一轮投前估值低于估值上限时按上限转股、高于上限时按折扣转股, 两种情形对创始团队的稀释差可能达到数个百分点。`);
+    p(t("own.s.conv.total", "- 转股后合计稀释: {pct}; 该部分已在第一节的全稀释列体现。", { pct: pct(r.convTotal) }));
+    p(t("own.s.conv.check", "- 需重点核对: 下一轮投前估值低于估值上限时按上限转股、高于上限时按折扣转股, 两种情形对创始团队的稀释差可能达到数个百分点。"));
     p("");
+  } else {
+    secSkip("conv", "输入未提供可转债或 SAFE");
   }
 
   // ---- 六、对赌与回购
-  p(sec("对赌与回购触发压力"));
-  p("| 项 | 内容 |");
+  p(sec("redeem"));
+  p(t("own.tbl.redeem.header", "| 项 | 内容 |"));
   p("|---|---|");
-  p(`| 清算优先 | ${r.terms.liquidation_pref || "未提供"} |`);
-  p(`| 反稀释 | ${r.terms.anti_dilution || "未提供"} |`);
-  p(`| 回购触发条件 | ${r.terms.redemption_trigger || "未提供"} |`);
-  p(`| 回购义务金额 | ${money(r.redeem)} |`);
-  p(`| 可动用流动性 | ${money(r.liquidity)} |`);
-  p(`| 回购 / 流动性 | ${r.redeemRatio !== null ? num(r.redeemRatio, 2) + " 倍" : "-"} |`);
-  p(`| 压力档位 | ${r.redeemTier ? `**${r.redeemTier.label}**` : "-"} |`);
-  p(`| 创始人个人连带 | ${r.terms.personal_guarantee === true ? "**有**" : "无或未提供"} |`);
+  p(t("own.s.redeem.pref", "| 清算优先 | {v} |", { v: r.terms.liquidation_pref || t("own.ui.notProvided", "未提供") }));
+  p(t("own.s.redeem.anti", "| 反稀释 | {v} |", { v: r.terms.anti_dilution || t("own.ui.notProvided", "未提供") }));
+  p(t("own.s.redeem.trigger", "| 回购触发条件 | {v} |", { v: r.terms.redemption_trigger || t("own.ui.notProvided", "未提供") }));
+  p(t("own.s.redeem.amount", "| 回购义务金额 | {v} |", { v: money(r.redeem) }));
+  p(t("own.s.redeem.liquidity", "| 可动用流动性 | {v} |", { v: money(r.liquidity) }));
+  p(t("own.s.redeem.ratio", "| 回购 / 流动性 | {v} |", {
+    v: r.redeemRatio !== null ? t("own.s.redeem.times", "{v} 倍", { v: num(r.redeemRatio, 2) }) : "-",
+  }));
+  p(t("own.s.redeem.tier", "| 压力档位 | {v} |", { v: r.redeemTier ? `**${r.redeemTier.label}**` : "-" }));
+  p(t("own.s.redeem.guarantee", "| 创始人个人连带 | {v} |", {
+    v: r.terms.personal_guarantee === true ? t("own.s.redeem.has", "**有**") : t("own.s.redeem.none", "无或未提供"),
+  }));
   p("");
-  if (r.redeemTier) p(`- 判定: ${r.redeemTier.desc}`);
+  if (r.redeemTier) p(t("own.s.redeem.verdict", "- 判定: {desc}", { desc: r.redeemTier.desc }));
   if (Array.isArray(r.terms.veto_matters) && r.terms.veto_matters.length) {
-    p(`- 投资人一票否决事项: ${r.terms.veto_matters.join("、")}`);
+    p(t("own.s.redeem.veto", "- 投资人一票否决事项: {items}", { items: list(r.terms.veto_matters) }));
   }
   p("");
 
   // ---- 七、控制权推演
-  p(sec("创始人控制权稳定性推演"));
-  p("> 按稀释比例线性折算的近似推演, 用于识别临界点, 不替代律师的精确测算。");
+  p(sec("ctrl"));
+  p(t("own.s.ctrl.note", "> 按稀释比例线性折算的近似推演, 用于识别临界点, 不替代律师的精确测算。"));
   p("");
-  p("| 情景 | 新增稀释 | 期权池补足 | 核心组表决权 | 距 50% | 距 33.34% | 守住否决线还需联合 |");
+  p(t("own.tbl.ctrl.header", "| 情景 | 新增稀释 | 期权池补足 | 核心组表决权 | 距 50% | 距 33.34% | 守住否决线还需联合 |"));
   p("|---|---|---|---|---|---|---|");
   for (const s of r.scenarios) {
-    p(`| ${s.label} | ${s.dilution}% | ${s.topup}% | **${pct(s.vote)}** | ${s.d50 >= 0 ? "+" : ""}${num(s.d50, 2)} | ${s.d3334 >= 0 ? "+" : ""}${num(s.d3334, 2)} | ${s.needFor3334 > 0 ? pct(s.needFor3334) : "无需"} |`);
+    p(`| ${s.label} | ${s.dilution}% | ${s.topup}% | **${pct(s.vote)}** | ${s.d50 >= 0 ? "+" : ""}${num(s.d50, 2)} | ${s.d3334 >= 0 ? "+" : ""}${num(s.d3334, 2)} | ${s.needFor3334 > 0 ? pct(s.needFor3334) : t("own.s.ctrl.noNeed", "无需")} |`);
   }
   p("");
   const firstLoss = r.scenarios.find((s) => s.vote < 33.34);
   const firstNo50 = r.scenarios.find((s) => s.vote < 50);
-  if (firstNo50) p(`- 在「${firstNo50.label}」情景下核心组表决权跌破 50%, 失去普通决议单方控制。`);
-  if (firstLoss) p(`- 在「${firstLoss.label}」情景下核心组表决权跌破 33.34%, 失去特别决议否决权: 后续任何增资、章程修改均可能被动接受。`);
-  p(`- 董事会: 创始人提名 ${r.founderSeats}/${r.boardSeats} 席${r.boardSeats > 0 && r.founderSeats > r.boardSeats / 2 ? ", 已过半" : ", 未过半"}`);
+  if (firstNo50) p(t("own.s.ctrl.lose50", "- 在「{label}」情景下核心组表决权跌破 50%, 失去普通决议单方控制。", { label: firstNo50.label }));
+  if (firstLoss) p(t("own.s.ctrl.loseVeto", "- 在「{label}」情景下核心组表决权跌破 33.34%, 失去特别决议否决权: 后续任何增资、章程修改均可能被动接受。", { label: firstLoss.label }));
+  p(t("own.s.ctrl.board", "- 董事会: 创始人提名 {f}/{total} 席{majority}", {
+    f: r.founderSeats,
+    total: r.boardSeats,
+    majority: r.boardSeats > 0 && r.founderSeats > r.boardSeats / 2
+      ? t("own.s.ctrl.majority", ", 已过半")
+      : t("own.s.ctrl.minority", ", 未过半"),
+  }));
   p("");
 
   // ---- 八、结论与待补
-  p(sec("结论与待补文件清单"));
+  p(sec("concl"));
   const concl = [];
-  if (r.uniInvolved && r.uniCompleteness < 1) concl.push(`成果转化权属链未闭合(${r.doneCnt}/${r.applicable.length})`);
-  if (r.nom.some((n) => !n.has_agreement)) concl.push("存在无书面协议的代持");
-  if (r.redeemTier && ["严重", "偏高"].includes(r.redeemTier.label)) concl.push(`回购压力${r.redeemTier.label}`);
-  if (r.terms.personal_guarantee === true) concl.push("创始人个人连带");
-  if (r.leverage !== null && r.leverage > P.LEVERAGE_FLAG) concl.push(`控制权依赖协议杠杆(${num(r.leverage, 2)} 倍)`);
-  p(concl.length ? `- 主要风险点: ${concl.join("; ")}。` : "- 未发现结构性控制权风险。");
-  p(`- 核心组表决权 ${pct(r.coreVote)}, 对应控制线: ${hitsLines(r.coreVote, P.LINES_ADD).join("; ") || "未达任何控制线"}`);
+  if (r.uniInvolved && r.uniCompleteness < 1) {
+    concl.push(t("own.concl.uniChain", "成果转化权属链未闭合({done}/{total})", { done: r.doneCnt, total: r.applicable.length }));
+  }
+  if (r.nom.some((n) => !n.has_agreement)) concl.push(t("own.concl.nominee", "存在无书面协议的代持"));
+  // 档位判定看 idx 不看标签: 标签是文案, 一改文案判定就静默失效
+  if (r.redeemTier && r.redeemTier.idx <= 1) {
+    concl.push(t("own.concl.redeem", "回购压力{label}", { label: r.redeemTier.label }));
+  }
+  if (r.terms.personal_guarantee === true) concl.push(t("own.concl.guarantee", "创始人个人连带"));
+  if (r.leverage !== null && r.leverage > P.LEVERAGE_FLAG) {
+    concl.push(t("own.concl.leverage", "控制权依赖协议杠杆({lev} 倍)", { lev: num(r.leverage, 2) }));
+  }
+  p(concl.length
+    ? t("own.s.concl.risks", "- 主要风险点: {items}。", { items: concl.join("; ") })
+    : t("own.s.concl.none", "- 未发现结构性控制权风险。"));
+  // 三种「不知道」必须分开写, 混成一句会把风险读反:
+  //   章程约定       → 不知道阈值是多少(且本辖区没有统一阈值这回事)
+  //   status=pending → 阈值有草稿但没核实过
+  //   未达任何线     → 知道阈值, 且确实一条都没到
+  if (LINES_PENDING) {
+    p(t("own.s.concl.voteOnly", "- 核心组表决权 {vote}。", { vote: pct(r.coreVote) }));
+    p(
+      t(
+        "own.s.concl.pendingLines",
+        "> 拒答: 本辖区({jd})的控制线阈值未核实(辖区档 status=pending), 因此不判定核心组表决权是否越过任何控制线。原因: 未核实的阈值一旦被当作事实引用, 结论会被读成「已越过 50%」。补齐来源后重跑本脚本。",
+        { jd: JURISDICTION }
+      )
+    );
+  } else {
+    p(t("own.s.concl.line", "- 核心组表决权 {vote}, 对应控制线: {lines}", {
+      vote: pct(r.coreVote),
+      // 「本档不给默认阈值」与「没达到任何线」是两件完全不同的事。
+      // 前者是不知道, 后者是知道且为零 —— 混成一句会把风险读反。
+      lines: CHARTER_DEFINED
+        ? t("own.s.concl.charterLines", "控制线由公司章程与投资人协议约定, 本档不给默认阈值(未取得章程前不作为结论依据)")
+        : hitsLines(r.coreVote, P.LINES_ADD).join("; ") || t("own.s.concl.noLine", "未达任何控制线"),
+    }));
+  }
   p("");
-  p("### 待补文件");
-  for (const t of r.todo) p(`- ${t}`);
+  p("### " + t("own.ui.todo", "待补文件"));
+  // 变量名不能叫 t: 会遮蔽模块级的取文案函数
+  for (const item of r.todo) p(`- ${item}`);
   p("");
 
-  p("## 警告");
+  p("## " + t("sections.warnings.title", "警告"));
   const uniq = [...new Set(r.warnings)];
   if (uniq.length) for (const x of uniq) p(`- ⚠ ${x}`);
-  else p("- 未发现需要提示的异常; 现有股东合计校验通过, 未检出循环持股与口径冲突。");
+  else p(t("own.s.warn.none", "- 未发现需要提示的异常; 现有股东合计校验通过, 未检出循环持股与口径冲突。"));
   p("");
 
   return L.join("\n");
@@ -946,19 +1231,23 @@ function render(r, P = DEFAULTS) {
 // ============================================================
 
 const argv = process.argv.slice(2);
-const KNOWN_FLAGS = ["--example", "--print-defaults", "--json"];
+const KNOWN_FLAGS = ["--example", "--print-defaults", "--json", "--dump-catalog"];
 
 let configPath = null;
+let cliLocale = null;
+let cliJurisdiction = null;
+let cliProfileDir = null;
 const rest = [];
 for (let i = 0; i < argv.length; i += 1) {
   const a = argv[i];
-  if (a === "--config") {
+  if (a === "--config" || a === "--profiles") {
     const next = argv[i + 1];
     if (!next || next.startsWith("--")) {
-      console.error("--config 需要一个文件路径");
+      console.error(`${a} 需要一个${a === "--profiles" ? "目录" : "文件"}路径`);
       process.exit(2);
     }
-    configPath = next;
+    if (a === "--config") configPath = next;
+    else cliProfileDir = next;
     i += 1;
     continue;
   }
@@ -966,21 +1255,89 @@ for (let i = 0; i < argv.length; i += 1) {
     configPath = a.slice("--config=".length);
     continue;
   }
+  if (a.startsWith("--profiles=")) {
+    cliProfileDir = a.slice("--profiles=".length);
+    continue;
+  }
+  if (a === "--lang" || a === "--jurisdiction") {
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      console.error(`${a} 需要一个值`);
+      process.exit(2);
+    }
+    if (a === "--lang") cliLocale = next;
+    else cliJurisdiction = next;
+    i += 1;
+    continue;
+  }
+  if (a.startsWith("--lang=")) {
+    cliLocale = a.slice("--lang=".length);
+    continue;
+  }
+  if (a.startsWith("--jurisdiction=")) {
+    cliJurisdiction = a.slice("--jurisdiction=".length);
+    continue;
+  }
   rest.push(a);
 }
 
 const unknown = rest.find((a) => a.startsWith("--") && !KNOWN_FLAGS.includes(a));
 if (unknown) {
-  console.error(`未知参数 ${unknown}; 可用: ${KNOWN_FLAGS.join(" ")} --config <file>`);
+  console.error(`未知参数 ${unknown}; 可用: ${KNOWN_FLAGS.join(" ")} --config <file> --profiles <dir> --lang <zh-CN|en-US> --jurisdiction <cn|us|eu>`);
   process.exit(2);
+}
+// 档目录可换: 让「status=pending 的阈值不许被当事实印出来」这条能被实测到。
+// 目录不存在时立刻中止 —— 静默回落内置目录会让测试以为自己验证了坏档。
+if (cliProfileDir) {
+  PROFILE_DIR = path.resolve(cliProfileDir);
+  if (!existsSync(PROFILE_DIR)) {
+    console.error(`--profiles 目录不存在: ${PROFILE_DIR}`);
+    process.exit(2);
+  }
 }
 const wantExample = rest.includes("--example");
 const wantPrint = rest.includes("--print-defaults");
 const wantJson = rest.includes("--json");
 const positional = rest.filter((a) => !a.startsWith("--"));
 
+/**
+ * 解析并落地运行期上下文。locale / 辖区属于参数, 非法即中止(exit 2):
+ * 语言错了, 整份报告的措辞都不可用; 辖区错了, 监管口径整章都是错的。
+ */
+function applyContext(meta = {}, { forceLocale = null } = {}) {
+  let ctx;
+  try {
+    ctx = resolveContext({ cliLocale: forceLocale || cliLocale, cliJurisdiction, meta });
+  } catch (e) {
+    console.error(`上下文非法: ${e.message}`);
+    process.exit(2);
+  }
+  setContext({ locale: ctx.locale, jurisdiction: ctx.jurisdiction });
+  // ---- 辖区档: 控制线属于法定事实, 不能由代码内置一套就当全世界通用
+  try {
+    const { profile } = loadProfile(PROFILE_DIR, JURISDICTION);
+    applyProfile(profile);
+    // 币种优先级: 输入声明 > 辖区档。两者都不给才兜底 CNY。
+    CURRENCY = meta.currency ? String(meta.currency).toUpperCase() : profile.currency;
+  } catch (e) {
+    if (e instanceof ProfileError) {
+      console.error(`辖区档校验未通过: ${e.message}`);
+      process.exit(2);
+    }
+    throw e;
+  }
+  if (ctx.conflicts.length) {
+    for (const c of ctx.conflicts) {
+      console.error(`⚠ 上下文冲突: ${c.field} 取 ${c.source} 的 ${c.used}, 覆盖了 ${c.overridden}`);
+    }
+  }
+  return ctx;
+}
+
 /** 输出出口。--json 输出机器可读对象, 否则输出终端报告。
- *  与 dd_score 同一约定: 终端排版是自由变量, JSON 才是稳定契约。 */
+ *  与 dd_score 同一约定: 终端排版是自由变量, JSON 才是稳定契约。
+ *  locale / jurisdiction / currency 是契约的一部分: 不写进 JSON, 下游无法判断
+ *  这份数字是用哪套口径和哪种语言算出来的。 */
 const OUTPUT_SCHEMA = "ownership-output/1";
 const emit = (r) => {
   if (!wantJson) {
@@ -988,7 +1345,18 @@ const emit = (r) => {
     return;
   }
   process.stdout.write(
-    JSON.stringify({ schema: OUTPUT_SCHEMA, script_version: VERSION, ...r }, null, 2) + "\n"
+    JSON.stringify(
+      {
+        schema: OUTPUT_SCHEMA,
+        script_version: VERSION,
+        locale: LOCALE,
+        jurisdiction: JURISDICTION,
+        currency: CURRENCY,
+        ...r,
+      },
+      null,
+      2
+    ) + "\n"
   );
 };
 
@@ -997,6 +1365,8 @@ if (wantPrint) {
     console.error("--print-defaults 与 --config 互斥: 前者输出内置默认参数, 后者加载外部参数集");
     process.exit(2);
   }
+  // 标签也要跟着语言走: 打印出来的是一份会被回灌的 config, 不是给人看的报告
+  applyContext({});
   process.stdout.write(JSON.stringify(defaultsAsConfig(), null, 2) + "\n");
   process.exit(0);
 }
@@ -1034,37 +1404,74 @@ if (configPath) {
   }
   hash8 = createHash("sha256").update(raw).digest("hex").slice(0, 8);
 }
-const P = resolveParams(cfg, { hash8 });
 
-if (!positional.length) {
-  emit(analyze(EXAMPLE_OBJ, P));
+// ---- 上下文必须在 resolveParams 之前落地:
+// 参数集校验的提示语(V-18/V-19)会随 warn 流进报告, 语言定得晚了它们就是中文
+const file = positional.length ? positional[0] : null;
+let data = null;
+if (file) {
+  try {
+    data = JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    console.error(`读取或解析失败: ${e.message}`);
+    process.exit(1);
+  }
+  if (!data || typeof data !== "object") {
+    console.error("输入必须是一个 JSON 对象");
+    process.exit(1);
+  }
+  if (!data.meta || !data.meta.as_of) {
+    console.error("缺少 meta.as_of(股权基准日, YYYY-MM-DD)");
+    process.exit(1);
+  }
+}
+
+// --dump-catalog 只生成中文镜像, 强制 zh(与 dd_score 同一约定: 镜像由 zh 生成)
+if (rest.includes("--dump-catalog")) {
+  applyContext(EXAMPLE_OBJ.meta, { forceLocale: DEFAULT_LOCALE });
+  resetDump();
+  // 结构遍历: 常量区里没有被任何示例触达的分支也要收进词表
+  OWN_SECTIONS.forEach((s) => {
+    t(`own.sec.${s.key}.title`, s.zh);
+    if (s.conditional) t(`own.skip.${s.key}`, "本节不适用");
+  });
+  Object.keys(TYPE_NAMES).forEach((k) => typeName(k));
+  Object.keys(ROLE_NAMES).forEach((k) => roleName(k));
+  LINES.forEach(([th, short]) => t(`own.line.${th}`, short));
+  REDEEM_RULES.forEach(([, label, desc], i) => {
+    t(`own.redeem.${i}.label`, label);
+    t(`own.redeem.${i}.desc`, desc);
+  });
+  UCHAIN_NODES.forEach((u) => {
+    t(`own.uchain.${u.id}.name`, u.name);
+    t(`own.uchain.${u.id}.risk`, u.risk);
+  });
+  ["founder", "committee", "external"].forEach((k) => t(`own.gpc.${k}`, k));
+  ["base", "next10", "next20", "next30"].forEach((k, i) => t(`own.scen.${k}`, CONTROL_SCENARIOS[i].label));
+  const P0 = resolveParams(cfg, { hash8 });
+  // 渲染遍历: 示例 + 缺条件节的分支都跑一遍, 把只在渲染时出现的文案收进来
+  render(analyze(EXAMPLE_OBJ, P0), P0);
+  render(analyze({ meta: { as_of: "2000-01-01" }, cap_table: [{ holder: "x", type: "other", pct: 100 }] }, P0), P0);
+  if (data) render(analyze(data, P0), P0);
+  process.stdout.write(JSON.stringify(dumpCatalog(), null, 2) + "\n");
   process.exit(0);
 }
 
-const file = positional[0];
-let data;
-try {
-  data = JSON.parse(readFileSync(file, "utf8"));
-} catch (e) {
-  console.error(`读取或解析失败: ${e.message}`);
-  process.exit(1);
-}
-if (!data || typeof data !== "object") {
-  console.error("输入必须是一个 JSON 对象");
-  process.exit(1);
-}
-if (!data.meta || !data.meta.as_of) {
-  console.error("缺少 meta.as_of(股权基准日, YYYY-MM-DD)");
-  process.exit(1);
+applyContext(data ? data.meta || {} : EXAMPLE_OBJ.meta || {});
+const P = resolveParams(cfg, { hash8 });
+
+if (!file) {
+  emit(analyze(EXAMPLE_OBJ, P));
+  process.exit(0);
 }
 
 const extra = [];
 if (data.meta.params_ref) {
   const actual = P.__meta ? `${P.__meta.id}@${P.__meta.hash8}` : null;
   if (!actual) {
-    extra.push(`输入声明 meta.params_ref=${data.meta.params_ref}, 但本次未加载参数集(--config): 该输入的结论不可按声明口径复算`);
+    extra.push(t("own.w.paramsRefMissing", "输入声明 meta.params_ref={ref}, 但本次未加载参数集(--config): 该输入的结论不可按声明口径复算", { ref: data.meta.params_ref }));
   } else if (actual !== data.meta.params_ref) {
-    extra.push(`输入声明 meta.params_ref=${data.meta.params_ref}, 实际加载 ${actual}: 复算基线已失效`);
+    extra.push(t("own.w.paramsRefStale", "输入声明 meta.params_ref={ref}, 实际加载 {actual}: 复算基线已失效", { ref: data.meta.params_ref, actual }));
   }
 }
 emit(analyze(data, P, extra));

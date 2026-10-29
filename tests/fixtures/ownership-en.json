@@ -1,0 +1,73 @@
+{
+  "_doc": "英文回归用例。与 examples/03-cap-table.json 结构同构、数据全英文, 用途是让「英文输出里不允许出现任何 CJK」这条断言可以被零容忍地执行 —— 中文示例里的股东名与备注是数据不是文案, 无法用同一把尺子量。",
+  "meta": {
+    "as_of": "2026-09-30",
+    "currency": "USD",
+    "locale": "en-US"
+  },
+  "cap_table": [
+    { "holder": "Founder A (CEO)", "type": "founder", "pct": 27.5, "voting_pct": 27.5, "board_seats": 2, "note": "includes voting rights held through the platform GP" },
+    { "holder": "Co-founder B (CTO)", "type": "founder", "pct": 13.0, "voting_pct": 13.0, "board_seats": 1 },
+    { "holder": "Professor C (Chief Scientist)", "type": "professor", "pct": 8.0, "voting_pct": 0, "board_seats": 0, "note": "voting rights irrevocably proxied to Founder A until 2029-12" },
+    { "holder": "University Asset Management Co.", "type": "corp", "pct": 5.0, "voting_pct": 5.0, "board_seats": 0, "note": "acquired by capitalising service inventions" },
+    { "holder": "Employee Holding Platform LP", "type": "staff_platform", "pct": 10.5, "voting_pct": 10.5, "board_seats": 0, "note": "Founder A acts as executive partner" },
+    { "holder": "Nominee D", "type": "nominee", "pct": 2.0, "voting_pct": 2.0, "board_seats": 0, "note": "holds for Founder A with no written agreement" },
+    { "holder": "Angel Fund E", "type": "fund", "pct": 9.0, "voting_pct": 9.0, "board_seats": 1 },
+    { "holder": "Series A Fund F", "type": "fund", "pct": 15.0, "voting_pct": 15.0, "board_seats": 1 },
+    { "holder": "Series B Strategic G", "type": "corp", "pct": 6.0, "voting_pct": 6.0, "board_seats": 0 },
+    { "holder": "ESOP pool (reserved, ungranted)", "type": "esop_pool", "pct": 4.0, "voting_pct": 0, "board_seats": 0 }
+  ],
+  "concert": [
+    ["Founder A (CEO)", "Professor C (Chief Scientist)"]
+  ],
+  "university": {
+    "involved": true,
+    "institution": "Example University",
+    "ip_form": "capitalized",
+    "equity_held_by_school": 5.0,
+    "professor_role": "department_head",
+    "part_time_approved": false,
+    "license_written": true,
+    "nodes": [
+      { "id": "N1", "status": "done", "note": "4 inventors, 2 departed and signed ownership confirmations" },
+      { "id": "N2", "status": "done", "note": "approved at the 9th university council meeting in 2021 and published for 15 days" },
+      { "id": "N3", "status": "missing", "note": "internal negotiated price only, no third-party valuation report" },
+      { "id": "N4", "status": "done", "note": "business registration amendment completed" },
+      { "id": "N5", "status": "missing", "note": "revenue share and industrialisation milestones not yet documented" }
+    ]
+  },
+  "nominal_holders": [
+    { "nominal": "Nominee D", "beneficial": "Founder A (CEO)", "pct": 2.0, "reason": "early filing simplification", "has_agreement": false }
+  ],
+  "platforms": [
+    { "name": "Employee Holding Platform LP", "gp": "Founder A (CEO)", "gp_control": "founder", "exec_partner": "Founder A (CEO)", "lp_count": 31 }
+  ],
+  "convertibles": [
+    { "type": "note", "principal": 30000000, "valuation_cap": 900000000, "discount": 0.8, "as_converted_pct": 3.4 },
+    { "type": "safe", "principal": 10000000, "valuation_cap": 1200000000, "discount": 0.85 }
+  ],
+  "esop": {
+    "total_pct": 14.5,
+    "granted_pct": 10.5,
+    "reserved_pct": 4.0
+  },
+  "terms": {
+    "liquidation_pref": "1x_np",
+    "anti_dilution": "broad_based",
+    "redemption_trigger": "ipo_deadline",
+    "redemption_amount": 380000000,
+    "personal_guarantee": true,
+    "board": { "founder": 3, "investor": 2, "independent": 1 },
+    "veto_matters": ["new financing", "disposal of material assets", "transfer of core IP", "appointment of the general manager"]
+  },
+  "financials": {
+    "cash": 210000000,
+    "undrawn_credit": 40000000
+  },
+  "scenarios": [
+    { "label": "Base case", "dilution_pct": 0, "esop_topup_pct": 0 },
+    { "label": "Next round, 12% dilution", "dilution_pct": 12, "esop_topup_pct": 4 },
+    { "label": "Next round, 22% dilution", "dilution_pct": 22, "esop_topup_pct": 6 },
+    { "label": "Two rounds, 32% cumulative dilution", "dilution_pct": 32, "esop_topup_pct": 8 }
+  ]
+}

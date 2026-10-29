@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen.svg)](https://nodejs.org)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](#工程约定)
-[![Version](https://img.shields.io/badge/version-0.4.0-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-informational.svg)](CHANGELOG.md)
 
 ---
 
@@ -109,6 +109,26 @@ node scripts/ownership.mjs cap.json --json
 为什么不直接解析终端 Markdown: 那等于把排版细节变成接口。报告里调一次列宽、换一个标点, 所有下游就静默断掉, 而且错得很像对。JSON 的字段在次版本内只增不减, 下游应忽略不认识的键。
 
 `--json` 与默认输出来自**同一次计算**, `tests/run.sh` 断言两者的分数必须完全一致 —— 否则就等于维护了两套逻辑。
+
+### 输出语言
+
+报告是双语的: `--lang zh-CN`(默认)或 `--lang en-US`。
+
+```bash
+node scripts/dd_score.mjs data.json --lang en-US
+node scripts/ownership.mjs cap.json --lang en-US
+node scripts/dd_score.mjs --print-defaults --lang en-US   # 参数集标签跟着走
+```
+
+定义语言与数字量级彼此独立。美元标的的中文报告读作 `USD 12.5 亿`, 人民币标的的英文报告读作 `CNY 1.25B` —— 两边各用自己习惯的进位, 币种从不被默默假定。
+
+这一版围绕三条规则构造:
+
+- **中文输出与 v0.4.0 逐字相同。** 中文串内联在调用点, 作为 `t(key, "中文", vars)` 的默认值, 英文词表是唯一的查表。若做成中英对偶词表, 一次「顺手润色」就能静默改掉中文, 而中文输出正是全部 golden 的比对基准。
+- **英文缺键是硬错误(exit 2), 不回落中文。** 回落产出的是一份半翻半不翻、却渲染成功的报告 —— 对交付物而言这是最坏的失败方式。
+- **不支持的 locale 同样 exit 2。** 没有「就近匹配」: `en` 与 `en-US` 若行为不同, 报告就不再可复现。
+
+`assets/i18n/zh-CN.json` 是生成出来的镜像, 不是真源。改过任何用户可见文案后跑 `node tools/dump-catalog.mjs` 重新生成; 镜像漂移时 `node tools/dump-catalog.mjs --check` 会让构建失败。
 
 ## 目录结构
 

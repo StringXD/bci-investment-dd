@@ -1,0 +1,79 @@
+{
+  "schema": "jurisdiction-profile/1",
+  "id": "cn",
+  "as_of": "2026-10-27",
+  "currency": "CNY",
+  "admission_only": false,
+  "_doc": "中国档。控制线五条是《公司法》法定阈值(事实), 收入档边界与退出通道是方法学假设(不是事实)。逐字复现 0.4.x 前的内置行为, 因此本档下三份 golden 不得有任何变化。",
+  "control_lines": {
+    "thresholds": [66.67, 50, 33.34, 10, 1],
+    "source_ref": "《中华人民共和国公司法》股东会决议与临时提案相关条文",
+    "as_of": "2024-07-01",
+    "status": "verified"
+  },
+  "rev_mult": {
+    "edges": [0, 100000000, 500000000],
+    "source_ref": "内置方法学假设: 与 REV_MULT 的七族×三档配套, 非外部统计口径",
+    "as_of": "2026-10-27",
+    "status": "methodology"
+  },
+  "sensitivity_rates": [0.08, 0.12, 0.15],
+  "exit_channels": [
+    {
+      "key": "ipo_star_5",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "上海证券交易所科创板股票上市规则(第五套上市标准)",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ipo_hk_18a",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "香港联合交易所主板上市规则第 18A 章",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ma",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "无监管门槛: 由买方类型与支付能力决定(见 content/exit/01-buyer-map.md)",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "secondary",
+      "is_channel": true,
+      "applicable": true,
+      "source_ref": "无监管门槛: 老股转让与 S 基金由交易双方约定",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "ipo_us",
+      "is_channel": true,
+      "applicable": false,
+      "source_ref": "本档标的是中国注册主体, 美股上市不是其常规退出路径",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    },
+    {
+      "key": "unknown",
+      "is_channel": false,
+      "applicable": true,
+      "source_ref": "非通道: 输入未填退出路径时的兜底, 不得当作「有多种选择」",
+      "as_of": "2026-10-27",
+      "status": "methodology"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "CN-G1",
+      "item": "科创板第五套标准的具体门槛数值(市值/研发投入/营收)",
+      "why": "规则经多次修订, 本档只记通道存在, 未逐条核到现行条文",
+      "how": "调取上交所现行上市规则原文并登记年份"
+    }
+  ]
+}
